@@ -1,0 +1,19 @@
+{
+  "name": "@examples/electron-frontend",
+  "version": "1.0.0",
+  "description": "Example Electron Frontend Package to render Window UI",
+  "license": "MIT",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@examples/electron-core": "workspace:*",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.10",
+    "@types/react-dom": "^19.0.4",
+    "typescript": "*"
+  }
+}

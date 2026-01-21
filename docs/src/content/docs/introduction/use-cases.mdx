@@ -1,0 +1,51 @@
+---
+title: Use Cases
+description: Real-world scenarios where cmd-ipc excels
+---
+
+import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components'
+
+cmd-ipc is designed for applications that need reliable, type-safe communication across process boundaries.
+
+## Examples
+
+<CardGrid>
+  <LinkCard
+    title="Web Workers"
+    description="Offload heavy computation to background threads while keeping the main thread responsive. Perfect for image processing, data analysis, and CPU-intensive tasks."
+    href="/cmd-ipc/examples/web-workers/"
+  />
+  <LinkCard
+    title="Electron"
+    description="Type-safe IPC between main and renderer processes. No more manual message type definitions or serialization boilerplate."
+    href="/cmd-ipc/examples/electron/"
+  />
+  <LinkCard
+    title="Cloudflare Workers"
+    description="Build HTTP APIs with automatic schema discovery. Clients generate types from your server's command schemas."
+    href="/cmd-ipc/examples/cloudflare-workers/"
+  />
+  <LinkCard
+    title="MCP Agent"
+    description="Expose commands as tools for AI agents via the Model Context Protocol. Claude, GPT, and other models can discover and call your commands."
+    href="/cmd-ipc/examples/mcp-agent/"
+  />
+</CardGrid>
+
+## Other Use Cases
+
+<CardGrid>
+  <Card title="Plugin Frameworks" icon="puzzle">
+    Build extensible applications where plugins run in isolated contexts. Each plugin registers its commands, and the host can call them by ID. Plugins can be loaded/unloaded dynamically without affecting the main application.
+  </Card>
+  <Card title="Unit Testing" icon="approve-check">
+    Decouple services without dependency injection. Commands provide natural boundaries for mocking—swap out command handlers in tests for predictable, isolated unit tests without complex DI containers.
+  </Card>
+  <Card title="Microservices" icon="server">
+    Share types across services in a monorepo. The HTTPChannel works well for backend-for-frontend patterns, API gateways, and edge functions calling origin servers.
+  </Card>
+  <Card title="Node.js Workers" icon="node">
+    Use `worker_threads` with the same API as Web Workers. The MessagePortChannel works identically in both environments, so code is portable between browser and Node.js.
+  </Card>
+</CardGrid>
+

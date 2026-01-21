@@ -1,0 +1,110 @@
+---
+title: Installation
+description: How to install cmd-ipc in your project
+---
+
+import { Tabs, TabItem, Aside } from '@astrojs/starlight/components';
+
+## Requirements
+
+- **Node.js** 20.18.2 or higher
+- **TypeScript** 5.0 or higher (recommended)
+
+## Package Installation
+
+Install cmd-ipc using your preferred package manager:
+
+<Tabs>
+  <TabItem label="npm">
+    ```bash
+    npm install @coralstack/cmd-ipc valibot
+    ```
+  </TabItem>
+  <TabItem label="yarn">
+    ```bash
+    yarn add @coralstack/cmd-ipc valibot
+    ```
+  </TabItem>
+  <TabItem label="pnpm">
+    ```bash
+    pnpm add @coralstack/cmd-ipc valibot
+    ```
+  </TabItem>
+  <TabItem label="bun">
+    ```bash
+    bun add @coralstack/cmd-ipc valibot
+    ```
+  </TabItem>
+</Tabs>
+
+<Aside>
+  <a href="https://valibot.dev/" target="_blank" rel="noopener">Valibot</a> is a peer dependency used for schema definition and validation. It's a lightweight alternative to Zod with excellent tree-shaking support. Unlike Zod, Valibot doesn't use `eval` or `new Function()`, making it compatible with strict Content Security Policy (CSP) environments and runtimes like Cloudflare Workers where these are restricted.
+</Aside>
+
+## TypeScript Configuration
+
+cmd-ipc uses decorators for the `@Command` syntax. Enable decorators in your `tsconfig.json`:
+
+```json
+{
+  "compilerOptions": {
+    "experimentalDecorators": true,
+    "emitDecoratorMetadata": true
+  }
+}
+```
+
+<Aside type="caution">
+  Both `experimentalDecorators` and `emitDecoratorMetadata` are required for the `@Command` decorator to work correctly.
+</Aside>
+
+## Reflect Metadata
+
+The decorator system requires `reflect-metadata`. Import it once at your application's entry point:
+
+```typescript
+// main.ts or index.ts
+import 'reflect-metadata'
+
+// Rest of your application
+import { CommandRegistry } from '@coralstack/cmd-ipc'
+```
+
+## CLI Installation (Optional)
+
+cmd-ipc includes a CLI for generating schemas from remote services. It's included in the main package:
+
+```bash
+# Generate TypeScript schema from a remote HTTP endpoint
+npx cmd-ipc generate-schema --url http://localhost:8787 --output ./src/api-schema.ts
+```
+
+Or add it as a script in your `package.json`:
+
+```json
+{
+  "scripts": {
+    "generate-schema": "cmd-ipc generate-schema --url http://localhost:8787 --output ./src/generated/api-schema.ts --prefix api"
+  }
+}
+```
+
+## Package Exports
+
+cmd-ipc provides multiple entry points:
+
+```typescript
+// Main exports - CommandRegistry, Channels, Decorators
+import {
+  CommandRegistry,
+  MessagePortChannel,
+  HTTPChannel,
+  Command,
+  registerCommands,
+} from '@coralstack/cmd-ipc'
+
+// Testing utilities
+import { TestLogger } from '@coralstack/cmd-ipc/testing'
+```
+
+

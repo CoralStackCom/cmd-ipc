@@ -1,0 +1,11 @@
+{
+  "name": "@examples/electron",
+  "version": "1.0.0",
+  "description": "Example Electron app using CMD-IPC Library for inter-process communication.",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "build:core": "yarn workspace @examples/electron-core build",
+    "start": "yarn workspace @example/electron-main start"
+  }
+}

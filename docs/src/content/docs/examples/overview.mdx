@@ -1,0 +1,37 @@
+---
+title: Examples Overview
+description: Explore cmd-ipc example projects
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components'
+
+cmd-ipc includes several example projects demonstrating different use cases of the library. All examples can be found in the `examples/` folder in the repository and is a complete, runnable application. More examples will be added over time.
+
+## Available Examples
+
+<CardGrid>
+  <Card title="Web Workers" icon="laptop">
+    Offload computation to background threads while keeping the UI responsive. Shows MessagePortChannel with React and Vite.
+
+    [View Example →](/cmd-ipc/examples/web-workers/)
+
+  </Card>
+  <Card title="Electron" icon="seti:electron">
+    Type-safe IPC between main and renderer processes in desktop apps. Demonstrates shared schemas across processes.
+
+    [View Example →](/cmd-ipc/examples/electron/)
+
+  </Card>
+  <Card title="Cloudflare Workers" icon="cloudflare">
+    HTTP-based commands with remote schema generation. Shows HTTPChannel for edge computing.
+
+    [View Example →](/cmd-ipc/examples/cloudflare-workers/)
+
+  </Card>
+  <Card title="AI Agent MCP" icon="star">
+    Expose commands as AI agent tools via tool calling. Easily integrate with Vercel AI SDK, OpenAI, Anthropic, and other frameworks.
+
+    [View Example →](/cmd-ipc/examples/mcp-agent/)
+
+  </Card>
+</CardGrid>

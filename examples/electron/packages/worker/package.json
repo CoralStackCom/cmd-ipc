@@ -1,0 +1,20 @@
+{
+  "name": "@examples/electron-worker",
+  "version": "1.0.0",
+  "description": "Worker process for the Electron Command IPC Example app.",
+  "license": "MIT",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@coralstack/cmd-ipc": "workspace:*",
+    "@examples/electron-core": "workspace:*",
+    "electron-log": "*",
+    "reflect-metadata": "*"
+  },
+  "devDependencies": {
+    "typescript": "*"
+  }
+}

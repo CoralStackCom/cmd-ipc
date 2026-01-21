@@ -1,0 +1,257 @@
+---
+title: HTTPChannel
+description: Using HTTPChannel for HTTP-based command communication
+---
+
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+`HTTPChannel` enables command communication over HTTP using the [Protocol](/cmd-ipc/introduction/protocol/) message format. It supports both client and server modes, making it ideal for:
+
+- REST API backends
+- Cloudflare Workers
+- Edge functions
+- Microservices communication
+
+## Two Modes
+
+HTTPChannel operates in two distinct modes:
+
+| Mode | Configuration | Use Case |
+|------|---------------|----------|
+| **Client** | Has `baseUrl` | Send commands to a remote server |
+| **Server** | No `baseUrl` | Receive commands from clients |
+
+## Client Mode
+
+Client mode sends HTTP POST requests to a remote server.
+
+### Configuration
+
+```typescript
+import { HTTPChannel } from '@coralstack/cmd-ipc'
+
+const channel = new HTTPChannel({
+  id: 'api',
+  baseUrl: 'https://api.example.com',
+  commandPrefix: 'api',    // Optional: prefix for remote commands
+  timeout: 30000,          // Optional: request timeout in ms (default: 30000)
+})
+
+await registry.registerChannel(channel)
+```
+
+### Configuration Options
+
+| Option | Type | Required | Description |
+|--------|------|----------|-------------|
+| `id` | `string` | Yes | Unique channel identifier |
+| `baseUrl` | `string` | Yes (client) | Server URL (e.g., `https://api.example.com`) |
+| `commandPrefix` | `string` | No | Prefix added to remote command IDs |
+| `timeout` | `number` | No | Request timeout in milliseconds (default: 30000) |
+
+### Command Prefix
+
+The `commandPrefix` option helps organize commands from different sources:
+
+```typescript
+// Without prefix:
+// Remote 'user.create' → local 'user.create'
+
+// With prefix 'api':
+// Remote 'user.create' → local 'api.user.create'
+
+const channel = new HTTPChannel({
+  id: 'api',
+  baseUrl: 'https://api.example.com',
+  commandPrefix: 'api',
+})
+
+// Execute with prefix
+await registry.executeCommand('api.user.create', { name: 'John' })
+// Sends to server as 'user.create' (prefix stripped)
+```
+
+## Server Mode
+
+Server mode receives HTTP requests and processes them via the registry.
+
+### Configuration
+
+```typescript
+import { HTTPChannel } from '@coralstack/cmd-ipc'
+
+const channel = new HTTPChannel({
+  id: 'http-server',
+  // No baseUrl = server mode
+})
+
+await registry.registerChannel(channel)
+```
+
+### Handling Requests
+
+Use `handleMessage()` to process incoming HTTP requests:
+
+<Tabs>
+  <TabItem label="Express">
+```typescript
+import express from 'express'
+
+const app = express()
+app.use(express.json())
+
+app.post('/cmd', async (req, res) => {
+  const response = await channel.handleMessage(req.body)
+  res.json(response)
+})
+
+app.get('/cmds.json', (req, res) => {
+  res.json({
+    status: 'ok',
+    commands: registry.listCommands()
+  })
+})
+
+app.listen(3000)
+```
+  </TabItem>
+  <TabItem label="Cloudflare Workers">
+```typescript
+export default {
+  async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url)
+
+    if (request.method === 'POST' && url.pathname === '/cmd') {
+      const body = await request.json()
+      const response = await channel.handleMessage(body)
+      return new Response(JSON.stringify(response), {
+        headers: { 'Content-Type': 'application/json' }
+      })
+    }
+
+    if (request.method === 'GET' && url.pathname === '/cmds.json') {
+      return new Response(JSON.stringify({
+        status: 'ok',
+        commands: registry.listCommands()
+      }), {
+        headers: { 'Content-Type': 'application/json' }
+      })
+    }
+
+    return new Response('Not Found', { status: 404 })
+  }
+}
+```
+  </TabItem>
+  <TabItem label="Node.js HTTP">
+```typescript
+import { createServer } from 'http'
+
+const server = createServer(async (req, res) => {
+  if (req.method === 'POST' && req.url === '/cmd') {
+    const chunks: Buffer[] = []
+    for await (const chunk of req) chunks.push(chunk)
+    const body = JSON.parse(Buffer.concat(chunks).toString())
+
+    const response = await channel.handleMessage(body)
+
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify(response))
+    return
+  }
+
+  if (req.method === 'GET' && req.url === '/cmds.json') {
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({
+      status: 'ok',
+      commands: registry.listCommands()
+    }))
+    return
+  }
+
+  res.writeHead(404)
+  res.end('Not Found')
+})
+
+server.listen(3000)
+```
+  </TabItem>
+</Tabs>
+
+## CORS Configuration
+
+For browser clients, configure CORS headers:
+
+```typescript
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',  // Or specific origin
+  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type',
+}
+
+// Handle preflight
+if (request.method === 'OPTIONS') {
+  return new Response(null, { headers: corsHeaders })
+}
+
+// Add to all responses
+return new Response(JSON.stringify(response), {
+  headers: {
+    'Content-Type': 'application/json',
+    ...corsHeaders
+  }
+})
+```
+
+## Endpoints
+
+HTTPChannel expects two endpoints on the server:
+
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/cmd` | POST | Execute commands (authenticated) |
+| `/cmds.json` | GET | Schema discovery for CLI (usually unauthenticated) |
+
+<Aside>
+  The `/cmds.json` endpoint is typically left unauthenticated to allow the CLI to generate TypeScript schemas from remote services. Private commands (prefixed with `_`) are automatically excluded from this endpoint.
+</Aside>
+
+## Common Issues
+
+### Cloudflare Workers Global Scope
+
+Cloudflare Workers don't allow async operations at global scope:
+
+```typescript
+// ❌ Wrong - async at global scope
+const registry = new CommandRegistry({ id: 'worker' })
+await registry.registerChannel(channel)
+
+// ✅ Correct - lazy initialization
+let registry: CommandRegistry | null = null
+
+async function getRegistry() {
+  if (!registry) {
+    registry = new CommandRegistry({ id: 'worker' })
+    await registry.registerChannel(channel)
+  }
+  return registry
+}
+
+export default {
+  async fetch(request) {
+    const reg = await getRegistry()
+    // ...
+  }
+}
+```
+
+### Timeout Errors
+
+If commands frequently timeout:
+
+1. Increase the timeout value
+2. Check server response times
+3. Verify network connectivity
+4. Check for server-side errors
+

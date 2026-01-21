@@ -1,0 +1,122 @@
+---
+title: Architecture
+description: Understanding cmd-ipc's Service Mesh Tree architecture and routing
+---
+
+import { Aside } from '@astrojs/starlight/components'
+
+cmd-ipc uses a **Service Mesh Tree** protocol that combines hierarchical tree routing with flexible mesh connectivity. This architecture enables any process to call any command across your entire application, regardless of where that command is registered. It also allows for direct connections between processes that communicate frequently, so they don't have to route via the root process.
+
+The messaging [Protocol](/cmd-ipc/introduction/protocol/) can be extended over a network via HTTP, WebSockets, gRPC, etc. to discover and execute commands on remote services. This provides a consistent developer experience—calling a command works exactly the same whether it's local to the current process, in another process, or on a remote service. Developers don't need to know how to route requests and responses over the Service Mesh Tree.
+
+```mermaid
+flowchart TD
+    subgraph Main["Main Process (Root)"]
+        MainReg["CommandRegistry (Global Registry)<br/>app.*, auth.* commands"]
+    end
+
+    subgraph Worker1["Worker 1"]
+        W1Reg["CommandRegistry<br/>calc.* commands"]
+    end
+
+    subgraph Worker2["Worker 2"]
+        W2Reg["CommandRegistry<br/>image.* commands"]
+    end
+
+    subgraph Worker3["Worker 3"]
+        W3Reg["CommandRegistry<br/>data.* commands"]
+    end
+
+    subgraph SubWorker["Sub-Worker"]
+        SubReg["CommandRegistry<br/>transform.* commands"]
+    end
+
+    subgraph Remote["Remote Service"]
+        RemoteReg["CommandRegistry<br/>api.* commands"]
+    end
+
+    Main <-->|MessagePortChannel| Worker1
+    Main <-->|MessagePortChannel| Worker2
+    Main <-->|MessagePortChannel| Worker3
+    Worker2 <-->|MessagePortChannel| SubWorker
+    Worker2 <-.->|Direct Connection| Worker3
+    Main <-->|HTTPChannel| Remote
+```
+
+## Core Concepts
+
+### CommandRegistry
+
+Each process has a `CommandRegistry` that stores local command handlers, tracks remote commands from connected channels, and routes command execution to the correct location.
+
+```typescript
+const registry = new CommandRegistry({
+  id: 'main',
+  routerChannel: 'parent', // Optional: escalate unknown commands up the tree
+})
+```
+
+### Channels
+
+Channels are bidirectional communication pipes between registries. When a channel connects, commands are automatically discovered and registered.
+
+```typescript
+const channel = new MessagePortChannel('worker', port)
+await registry.registerChannel(channel)
+// Registry now knows about all commands from the worker
+```
+
+### Commands & Events
+
+**Commands** are request-response operations that can be local or remote. **Events** are fire-and-forget broadcasts to all connected registries. Both can be made **private** (prefixed with `_`) to prevent propagation to other processes.
+
+## How Routing Works
+
+The Service Mesh Tree protocol has two key mechanisms:
+
+### 1. Command Registration (Up the Tree)
+
+When a channel connects, commands register **up the tree** to the root. Each registration returns a response acknowledging success or an error if the command ID is already registered. This ensures the main process always has a complete global registry of all commands and the routing path to reach them.
+
+```mermaid
+sequenceDiagram
+    participant Sub as Sub-Worker
+    participant W2 as Worker 2
+    participant Main as Main Process
+
+    Sub->>W2: register.command.request<br/>{ command: "transform.resize" }
+    W2->>Main: register.command.request<br/>{ command: "transform.resize" }
+    Main-->>W2: register.command.response<br/>{ success: true }
+    W2-->>Sub: register.command.response<br/>{ success: true }
+    Note over Main: Global registry knows<br/>transform.resize is<br/>reachable via Worker 2
+```
+
+### 2. Command Execution (Find & Route)
+
+When a command is called, the routing follows this priority:
+
+```mermaid
+flowchart TD
+    A["executeCommand('data.query', args)"] --> B{1. Local?}
+    B -->|Yes| C[Execute locally]
+    B -->|No| D{2. Direct connection?}
+    D -->|Yes| E[Send to channel]
+    D -->|No| F{3. Router set?}
+    F -->|Yes| G[Escalate to parent]
+    F -->|No| H[Error: Not found]
+    G --> I[Parent routes to<br/>correct process]
+```
+
+**Example: Sub-Worker calling `data.query`**
+
+1. **Local?** No (Sub-Worker only has `transform.*`)
+2. **Direct connection?** No (only connected to Worker 2)
+3. **Escalate to Worker 2** → Worker 2 has direct connection to Worker 3 → Routes directly
+4. Worker 3 executes and returns result
+
+<Aside type="tip">
+  Direct mesh connections (like Worker 2 ↔ Worker 3) optimize routing by avoiding unnecessary hops
+  through the root. The tree structure ensures commands are always discoverable, while mesh
+  connections provide shortcuts.
+</Aside>
+

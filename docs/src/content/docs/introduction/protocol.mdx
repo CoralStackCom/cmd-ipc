@@ -1,0 +1,303 @@
+---
+title: Protocol
+description: Understanding the cmd-ipc message protocol and HTTP endpoints
+---
+
+import { Aside } from '@astrojs/starlight/components'
+
+cmd-ipc uses a JSON-based message protocol for communication between registries. All messages are sent via channels—either directly (MessagePortChannel) or over HTTP (HTTPChannel).
+
+## HTTP Endpoints
+
+When using HTTPChannel, two endpoints handle all communication:
+
+### GET /cmds.json — Schema Discovery
+
+Returns all available commands with their schemas. Used for client type generation and service discovery.
+
+```http
+GET /cmds.json HTTP/1.1
+Host: api.example.com
+```
+
+```json
+{
+  "status": "ok",
+  "commands": [
+    {
+      "id": "user.create",
+      "description": "Creates a new user account",
+      "isLocal": true,
+      "schema": {
+        "request": {
+          "type": "object",
+          "properties": {
+            "name": { "type": "string" },
+            "email": { "type": "string", "format": "email" }
+          },
+          "required": ["name", "email"]
+        },
+        "response": {
+          "type": "object",
+          "properties": {
+            "id": { "type": "string" },
+            "name": { "type": "string" },
+            "email": { "type": "string" }
+          }
+        }
+      }
+    }
+  ]
+}
+```
+
+<Aside type="tip">Private commands (prefixed with `_`) are excluded from schema discovery.</Aside>
+
+### POST /cmd — Message Transport
+
+All protocol messages are sent via `POST /cmd`. The `type` field determines how the message is processed.
+
+## Message Types
+
+The protocol defines seven message types grouped into four categories.
+
+---
+
+### Command Execution
+
+#### execute.command.request
+
+Request to execute a command on a remote registry.
+
+```json
+{
+  "id": "550e8400-e29b-41d4-a716-446655440000",
+  "type": "execute.command.request",
+  "commandId": "user.create",
+  "request": {
+    "name": "John Doe",
+    "email": "john@example.com"
+  }
+}
+```
+
+| Field       | Type      | Description                  |
+| ----------- | --------- | ---------------------------- |
+| `id`        | `string`  | Unique message ID (UUID)     |
+| `type`      | `string`  | `"execute.command.request"`  |
+| `commandId` | `string`  | The command to execute       |
+| `request`   | `object?` | Command arguments (optional) |
+
+#### execute.command.response
+
+Response from command execution, indicating success or failure.
+
+**Success:**
+
+```json
+{
+  "id": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+  "type": "execute.command.response",
+  "thid": "550e8400-e29b-41d4-a716-446655440000",
+  "response": {
+    "ok": true,
+    "result": {
+      "id": "usr_123",
+      "name": "John Doe",
+      "email": "john@example.com"
+    }
+  }
+}
+```
+
+**Error:**
+
+```json
+{
+  "id": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+  "type": "execute.command.response",
+  "thid": "550e8400-e29b-41d4-a716-446655440000",
+  "response": {
+    "ok": false,
+    "error": {
+      "code": "COMMAND_NOT_FOUND",
+      "message": "Command not found: user.unknown"
+    }
+  }
+}
+```
+
+| Field                    | Type      | Description                                                |
+| ------------------------ | --------- | ---------------------------------------------------------- |
+| `id`                     | `string`  | Unique message ID (UUID)                                   |
+| `type`                   | `string`  | `"execute.command.response"`                               |
+| `thid`                   | `string`  | Thread ID — matches the request's `id`                     |
+| `response.ok`            | `boolean` | Whether execution succeeded                                |
+| `response.result`        | `any?`    | Command result (when `ok: true`)                           |
+| `response.error`         | `object?` | Error details (when `ok: false`)                           |
+| `response.error.code`    | `string`  | Error code (e.g., `COMMAND_NOT_FOUND`, `VALIDATION_ERROR`) |
+| `response.error.message` | `string`  | Human-readable error message                               |
+
+<Aside>
+  The `thid` (thread ID) field correlates responses to requests, enabling concurrent command
+  execution.
+</Aside>
+
+---
+
+### Command Registration
+
+Used when channels connect to share available commands up the tree.
+
+#### register.command.request
+
+Registers a command from a remote registry.
+
+```json
+{
+  "id": "550e8400-e29b-41d4-a716-446655440000",
+  "type": "register.command.request",
+  "command": {
+    "id": "calc.factorial",
+    "description": "Computes factorial of n",
+    "schema": {
+      "request": {
+        "type": "object",
+        "properties": { "n": { "type": "number" } }
+      },
+      "response": {
+        "type": "object",
+        "properties": { "result": { "type": "number" } }
+      }
+    }
+  }
+}
+```
+
+| Field                 | Type      | Description                               |
+| --------------------- | --------- | ----------------------------------------- |
+| `id`                  | `string`  | Unique message ID (UUID)                  |
+| `type`                | `string`  | `"register.command.request"`              |
+| `command`             | `object`  | Command definition                        |
+| `command.id`          | `string`  | Command ID (must be globally unique)      |
+| `command.description` | `string?` | Optional description                      |
+| `command.schema`      | `object?` | Optional JSON Schema for request/response |
+
+#### register.command.response
+
+Acknowledgment of command registration.
+
+**Success:**
+
+```json
+{
+  "id": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+  "type": "register.command.response",
+  "thid": "550e8400-e29b-41d4-a716-446655440000",
+  "response": {
+    "ok": true
+  }
+}
+```
+
+**Error (command already registered):**
+
+```json
+{
+  "id": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+  "type": "register.command.response",
+  "thid": "550e8400-e29b-41d4-a716-446655440000",
+  "response": {
+    "ok": false,
+    "error": "COMMAND_ALREADY_REGISTERED"
+  }
+}
+```
+
+| Field            | Type      | Description                        |
+| ---------------- | --------- | ---------------------------------- |
+| `id`             | `string`  | Unique message ID (UUID)           |
+| `type`           | `string`  | `"register.command.response"`      |
+| `thid`           | `string`  | Thread ID — matches request's `id` |
+| `response.ok`    | `boolean` | Whether registration succeeded     |
+| `response.error` | `string?` | Error code (when `ok: false`)      |
+
+---
+
+### Command Discovery
+
+Used to query available commands from a remote registry.
+
+#### list.commands.request
+
+Request a list of available commands.
+
+```json
+{
+  "id": "550e8400-e29b-41d4-a716-446655440000",
+  "type": "list.commands.request"
+}
+```
+
+| Field  | Type     | Description               |
+| ------ | -------- | ------------------------- |
+| `id`   | `string` | Unique message ID (UUID)  |
+| `type` | `string` | `"list.commands.request"` |
+
+#### list.commands.response
+
+Returns available commands from the remote registry.
+
+```json
+{
+  "id": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+  "type": "list.commands.response",
+  "thid": "550e8400-e29b-41d4-a716-446655440000",
+  "commands": [
+    { "id": "math.add", "description": "Adds two numbers" },
+    { "id": "math.multiply", "description": "Multiplies two numbers" }
+  ]
+}
+```
+
+| Field      | Type     | Description                        |
+| ---------- | -------- | ---------------------------------- |
+| `id`       | `string` | Unique message ID (UUID)           |
+| `type`     | `string` | `"list.commands.response"`         |
+| `thid`     | `string` | Thread ID — matches request's `id` |
+| `commands` | `array`  | List of command definitions        |
+
+---
+
+### Events
+
+#### event
+
+Broadcast message to all connected registries. Events are fire-and-forget—they have no response.
+
+```json
+{
+  "id": "550e8400-e29b-41d4-a716-446655440000",
+  "type": "event",
+  "eventId": "user.created",
+  "payload": {
+    "userId": "usr_123",
+    "name": "John Doe"
+  }
+}
+```
+
+| Field     | Type     | Description                             |
+| --------- | -------- | --------------------------------------- |
+| `id`      | `string` | Unique message ID (UUID)                |
+| `type`    | `string` | `"event"`                               |
+| `eventId` | `string` | Event identifier (e.g., `user.created`) |
+| `payload` | `any?`   | Event data (optional)                   |
+
+<Aside type="caution">
+  Events are fire-and-forget. They propagate to all connected registries but have no response or
+  delivery guarantee.
+</Aside>
+
+---
+

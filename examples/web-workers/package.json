@@ -1,0 +1,27 @@
+{
+  "name": "@examples/web-workers",
+  "version": "1.0.0",
+  "description": "Web Workers example demonstrating cmd-ipc command routing across browser workers",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@coralstack/cmd-ipc": "workspace:*",
+    "react": "^19.2.3",
+    "react-dom": "^19.2.3",
+    "valibot": "^1.2.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.7",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.1.2",
+    "typescript": "*",
+    "vite": "^6.3.5"
+  }
+}

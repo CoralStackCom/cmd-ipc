@@ -1,0 +1,38 @@
+---
+title: What is cmd-ipc?
+description: An overview of cmd-ipc and its core concepts
+---
+
+**cmd-ipc** is a TypeScript library for Inter-Process Communication (IPC) that provides a unified, type-safe command system for applications spanning multiple processes, workers, or services.
+
+## The Problem
+
+Modern applications often need to communicate across boundaries:
+
+- **Electron apps** send messages between main and renderer processes
+- **Web apps** offload work to Web Workers for better performance
+- **Microservices** communicate via HTTP or message queues
+- **AI agents** call tools exposed by your application
+
+Traditional approaches lead to type mismatches, boilerplate code for message serialization and routing, inconsistent patterns across different channels, and difficult debugging when messages get lost or malformed.
+
+## The Solution
+
+cmd-ipc provides a **Command Registry** pattern that abstracts away the underlying transport while maintaining full type safety:
+
+```typescript
+// Same API whether calling a local function, a Web Worker, or a remote service
+const result = await registry.executeCommand('user.create', {
+  name: 'John',
+  email: 'john@example.com',
+})
+```
+
+## Key Benefits
+
+- **Type Safety** — Full TypeScript inference with runtime validation using <a href="https://valibot.dev/" target="_blank" rel="noopener">Valibot</a> schemas
+- **Transport Agnostic** — Same API for MessagePort, HTTP, WebSockets, or custom channels
+- **Automatic Routing** — Commands route to the correct process without manual wiring
+- **Schema Discovery** — Remote services expose their command schemas for type generation
+- **Event Broadcasting** — Fire-and-forget events propagate to all connected processes
+

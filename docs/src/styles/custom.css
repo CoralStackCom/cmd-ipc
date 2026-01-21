@@ -1,0 +1,157 @@
+/* Custom styles for cmd-ipc documentation */
+
+/* Accent color customization - indigo/purple theme */
+:root {
+  --sl-color-accent-low: #1e1b4b;
+  --sl-color-accent: #6366f1;
+  --sl-color-accent-high: #c7d2fe;
+}
+
+:root[data-theme='light'] {
+  --sl-color-accent-low: #e0e7ff;
+  --sl-color-accent: #4f46e5;
+  --sl-color-accent-high: #312e81;
+}
+
+/* Code block styling - softer corners */
+.expressive-code .frame {
+  border-radius: 0.5rem;
+}
+
+/* Badge styling for documentation */
+.badge {
+  display: inline-block;
+  padding: 0.25rem 0.5rem;
+  border-radius: 0.25rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.badge-local {
+  background: #16a34a;
+  color: white;
+}
+
+.badge-remote {
+  background: #2563eb;
+  color: white;
+}
+
+.badge-channel {
+  background: #a78bfa;
+  color: #1a1a2e;
+}
+
+/* Mermaid diagram expandable modal styles */
+.mermaid-wrapper {
+  position: relative;
+  cursor: pointer;
+}
+
+.mermaid-wrapper::after {
+  content: '⤢ Click to expand';
+  position: absolute;
+  top: 0.5rem;
+  right: 0.5rem;
+  font-size: 0.75rem;
+  color: var(--sl-color-gray-4);
+  background: var(--sl-color-bg);
+  padding: 0.25rem 0.5rem;
+  border-radius: 0.25rem;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+  pointer-events: none;
+}
+
+.mermaid-wrapper:hover::after {
+  opacity: 1;
+}
+
+.mermaid-wrapper:hover {
+  outline: 2px solid var(--sl-color-accent);
+  outline-offset: 4px;
+  border-radius: 0.25rem;
+}
+
+/* Modal overlay */
+.mermaid-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.85);
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem;
+  opacity: 0;
+  visibility: hidden;
+  transition:
+    opacity 0.3s ease,
+    visibility 0.3s ease;
+}
+
+.mermaid-modal-overlay.active {
+  opacity: 1;
+  visibility: visible;
+}
+
+.mermaid-modal-content {
+  background: var(--sl-color-bg);
+  border-radius: 0.5rem;
+  width: 95vw;
+  height: 95vh;
+  overflow: auto;
+  padding: 2rem;
+  position: relative;
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+}
+
+.mermaid-modal-body {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 0;
+}
+
+.mermaid-modal-content svg {
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
+}
+
+.mermaid-modal-close {
+  position: absolute;
+  top: 0.75rem;
+  right: 0.75rem;
+  background: var(--sl-color-gray-6);
+  border: none;
+  color: var(--sl-color-white);
+  width: 2rem;
+  height: 2rem;
+  border-radius: 50%;
+  cursor: pointer;
+  font-size: 1.25rem;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.2s ease;
+}
+
+.mermaid-modal-close:hover {
+  background: var(--sl-color-accent);
+}
+
+.mermaid-modal-hint {
+  position: absolute;
+  bottom: 0.75rem;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 0.75rem;
+  color: var(--sl-color-gray-4);
+}

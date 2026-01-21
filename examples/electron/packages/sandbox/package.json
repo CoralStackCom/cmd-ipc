@@ -1,0 +1,20 @@
+{
+  "name": "@examples/electron-sandbox",
+  "version": "1.0.0",
+  "description": "Sandboxed process for the Electron Command IPC Example app.",
+  "private": true,
+  "license": "MIT",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@coralstack/cmd-ipc": "workspace:*",
+    "@examples/electron-core": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "*",
+    "vitest": "*"
+  }
+}

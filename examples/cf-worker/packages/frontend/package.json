@@ -1,0 +1,28 @@
+{
+  "name": "@examples/cf-worker-frontend",
+  "version": "1.0.0",
+  "description": "React frontend consuming Cloudflare Worker commands via HTTPChannel",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --port 5174",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "generate-schema": "cmd-ipc generate-schema --host http://localhost:8787 --output src/schemas/generated/worker-commands.ts --prefix cloud",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@coralstack/cmd-ipc": "workspace:*",
+    "react": "^19.2.3",
+    "react-dom": "^19.2.3",
+    "valibot": "^1.2.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.7",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.1.2",
+    "typescript": "*",
+    "vite": "^6.3.5"
+  }
+}

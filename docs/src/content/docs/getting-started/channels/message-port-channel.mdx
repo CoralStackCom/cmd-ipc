@@ -1,0 +1,87 @@
+---
+title: MessagePortChannel
+description: Using MessagePortChannel for Web Workers and thread communication
+---
+
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+`MessagePortChannel` enables communication via the <a href="https://developer.mozilla.org/en-US/docs/Web/API/MessagePort" target="_blank" rel="noopener">MessagePort API</a>, making it ideal for:
+
+- Web Workers
+- Node.js `worker_threads`
+- `MessageChannel` instances
+- Electron IPC (via adapter)
+
+## Basic Usage
+
+Create a <a href="https://developer.mozilla.org/en-US/docs/Web/API/MessageChannel" target="_blank" rel="noopener">MessageChannel</a> and use its ports to connect two registries:
+
+```typescript
+import { MessagePortChannel } from '@coralstack/cmd-ipc'
+
+// Create a MessageChannel with paired ports
+const { port1, port2 } = new MessageChannel()
+
+// Main thread keeps port1
+const channel = new MessagePortChannel('worker', port1)
+await registry.registerChannel(channel)
+
+// Send port2 to the worker
+worker.postMessage({ type: 'init' }, [port2])
+```
+
+```typescript
+// In the worker - receive port2 and create channel
+self.onmessage = (event) => {
+  if (event.data.type === 'init' && event.ports[0]) {
+    const channel = new MessagePortChannel('main', event.ports[0])
+    registry.registerChannel(channel)
+    channel.start()
+  }
+}
+```
+
+## Constructor
+
+```typescript
+new MessagePortChannel(id: string, port: MessagePort)
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `id` | `string` | Unique identifier for this channel |
+| `port` | `MessagePort` | The MessagePort used for communication |
+
+## Performance Tips
+
+1. **Minimize message size** - Large messages are serialized/deserialized
+2. **Use transferable objects** - For ArrayBuffer, ImageBitmap, etc.
+3. **Batch operations** - Multiple small commands have overhead
+4. **Keep handlers fast** - Slow handlers block the worker
+
+<Aside type="caution">
+  The structured clone algorithm is used for messages. Functions, DOM nodes, and some objects cannot be transferred.
+</Aside>
+
+## Debugging
+
+Enable logging to see message flow:
+
+```typescript
+const registry = new CommandRegistry({
+  id: 'main',
+  logger: console,  // Log all messages
+})
+```
+
+Or use the TestLogger for testing:
+
+```typescript
+import { TestLogger } from '@coralstack/cmd-ipc/testing'
+
+const registry = new CommandRegistry({
+  id: 'test',
+  logger: TestLogger,
+})
+```
+

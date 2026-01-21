@@ -1,0 +1,20 @@
+{
+  "name": "@examples/electron-core",
+  "version": "1.0.0",
+  "description": "Core Electron library shared between processes",
+  "license": "MIT",
+  "private": true,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc --build tsconfig.build.json --force",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@coralstack/cmd-ipc": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "*",
+    "vitest": "*"
+  }
+}

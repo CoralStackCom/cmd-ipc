@@ -1,0 +1,89 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self' 'unsafe-inline' blob:; script-src 'self' 'unsafe-inline' blob:; worker-src blob: 'self'; {{CONNECT_SRC_DIRECTIVE}};"
+    />
+    <title>Sandbox Worker</title>
+  </head>
+  <body>
+    <script>
+      // Sandbox worker manager
+      ;(function () {
+        let worker = null
+        let workerId = null
+
+        // Listen for init message from parent
+        window.addEventListener('message', function (event) {
+          if (event.data.type === 'sandbox-init') {
+            workerId = event.data.workerId
+            const workerUrl = event.data.workerUrl
+            const port = event.ports[0]
+
+            if (!port) {
+              window.parent.postMessage(
+                {
+                  type: 'sandbox-error',
+                  workerId: workerId,
+                  error: 'No MessagePort received',
+                },
+                '*',
+              )
+              return
+            }
+
+            try {
+              // Create the worker
+              worker = new Worker(workerUrl, { type: 'module' })
+
+              // Forward the port directly to the worker
+              worker.postMessage({ type: 'init' }, [port])
+
+              // Listen for worker errors
+              worker.onerror = function (error) {
+                window.parent.postMessage(
+                  {
+                    type: 'sandbox-error',
+                    workerId: workerId,
+                    error: error.message || 'Worker error',
+                  },
+                  '*',
+                )
+              }
+
+              // Notify parent that worker is ready
+              window.parent.postMessage(
+                {
+                  type: 'sandbox-ready',
+                  workerId: workerId,
+                },
+                '*',
+              )
+            } catch (err) {
+              window.parent.postMessage(
+                {
+                  type: 'sandbox-error',
+                  workerId: workerId,
+                  error: err.message || 'Failed to create worker',
+                },
+                '*',
+              )
+            }
+          }
+        })
+
+        // Handle cleanup message
+        window.addEventListener('message', function (event) {
+          if (event.data.type === 'sandbox-destroy' && event.data.workerId === workerId) {
+            if (worker) {
+              worker.terminate()
+              worker = null
+            }
+          }
+        })
+      })()
+    </script>
+  </body>
+</html>

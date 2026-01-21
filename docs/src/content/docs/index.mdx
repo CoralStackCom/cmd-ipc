@@ -1,0 +1,105 @@
+---
+title: cmd-ipc
+description: Type-safe Inter-Process Communication for TypeScript
+template: splash
+hero:
+  tagline: A powerful IPC library for running typed Commands across multiple processes and services with full TypeScript support.
+  image:
+    file: ../../assets/logo-dark.svg
+  actions:
+    - text: Get Started
+      link: /cmd-ipc/getting-started/installation/
+      icon: right-arrow
+      variant: primary
+    - text: View on GitHub
+      link: https://github.com/CoralStackCom/cmd-ipc
+      icon: external
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+## Why cmd-ipc?
+
+Building applications that span multiple processes, workers, or services often means dealing with complex message passing, type mismatches, and boilerplate code. **cmd-ipc** solves this by providing a unified, type-safe command system that works across any boundary.
+
+<CardGrid stagger>
+  <Card title="Type-Safe Commands" icon="approve-check">
+    Define commands with Valibot schemas and get full TypeScript inference across process boundaries. No more runtime type errors.
+  </Card>
+  <Card title="Universal Channels" icon="random">
+    Works with Web Workers, Electron IPC, HTTP APIs, WebSockets, and more. Same API everywhere.
+  </Card>
+  <Card title="Decorator-Based" icon="puzzle">
+    Use `@Command` decorators to define handlers. Clean, readable code with zero boilerplate.
+  </Card>
+  <Card title="Event Broadcasting" icon="rocket">
+    Broadcast events across all connected processes with automatic routing and deduplication.
+  </Card>
+</CardGrid>
+
+## Quick Example
+
+```typescript
+import { CommandRegistry, Command, registerCommands } from '@coralstack/cmd-ipc'
+import * as v from 'valibot'
+
+// Define your command schema
+const CommandSchema = {
+  'math.add': {
+    request: v.object({ a: v.number(), b: v.number() }),
+    response: v.number(),
+  },
+} as const
+
+// Create a command handler
+class MathService {
+  @Command('math.add')
+  add({ a, b }: { a: number; b: number }): number {
+    return a + b
+  }
+}
+
+// Set up the registry
+const registry = new CommandRegistry({
+  id: 'main',
+  schemas: { commands: CommandSchema },
+})
+
+registerCommands([new MathService()], registry)
+
+// Execute with full type safety
+const result = await registry.executeCommand('math.add', { a: 5, b: 3 })
+// result is typed as number = 8
+```
+
+## Use Cases
+
+<CardGrid>
+  <Card title="Electron Apps" icon="laptop">
+    Communicate between main and renderer processes with type safety. No more IPC message mismatches.
+  </Card>
+  <Card title="Web Workers" icon="seti:html">
+    Offload heavy computation to workers while maintaining a clean, typed API.
+  </Card>
+  <Card title="Microservices" icon="cloud">
+    Build type-safe HTTP APIs with automatic schema validation via HTTPChannel.
+  </Card>
+  <Card title="AI Agents" icon="star">
+    Expose commands as MCP tools for AI agents with automatic schema generation.
+  </Card>
+</CardGrid>
+
+## Features at a Glance
+
+- **Hybrid Tree-Mesh Architecture** - Commands route intelligently across connected registries
+- **Schema Validation** - Runtime validation with Valibot, compile-time types with TypeScript
+- **CLI Tools** - Generate schemas from remote services, validate configurations
+- **Event System** - Broadcast events with automatic deduplication
+- **Private Commands** - Keep internal commands hidden from other processes
+- **Flexible Channels** - MessagePort, HTTP, WebSocket, or build your own
+
+---
+
+<div style="text-align: center; margin-top: 2rem;">
+  Ready to get started? Check out the [installation guide](/cmd-ipc/getting-started/installation/) or explore the [examples](/cmd-ipc/examples/overview/).
+</div>

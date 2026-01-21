@@ -1,0 +1,9 @@
+# Allow all crawlers
+User-agent: *
+Allow: /
+
+# Sitemap location
+Sitemap: https://coralstackcom.github.io/cmd-ipc/sitemap-index.xml
+
+# LLM-friendly documentation
+# See: https://coralstackcom.github.io/cmd-ipc/llms.txt

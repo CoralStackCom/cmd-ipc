@@ -1,0 +1,91 @@
+{
+  "name": "@coralstack/cmd-ipc",
+  "version": "0.0.1",
+  "description": "A Command IPC framework for multi-process applications and agents",
+  "keywords": [],
+  "author": {
+    "name": "Angelfish Software LLC",
+    "email": "support@coralstack.com"
+  },
+  "license": "MIT",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": "./dist/cli/index.js",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs",
+      "default": "./dist/index.js"
+    },
+    "./testing": {
+      "types": "./dist/testing/index.d.ts",
+      "import": "./dist/testing/index.js",
+      "require": "./dist/testing/index.cjs",
+      "default": "./dist/testing/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "lint": "yarn eslint . --fix",
+    "prettify": "yarn prettier . -w",
+    "format": "yarn prettify && yarn lint",
+    "typecheck": "tsc --noEmit",
+    "typecheck:examples": "yarn workspaces foreach -A run typecheck",
+    "start:examples-electron": "yarn workspace @examples/electron-core build && yarn workspace @examples/electron-main start",
+    "start:examples-web-workers": "yarn workspace @examples/web-workers dev",
+    "start:examples-agent-mcp": "yarn workspace @examples/agent-mcp dev",
+    "start:examples-cf-worker": "yarn workspace @examples/cf-worker dev",
+    "docs:dev": "yarn workspace @coralstack/cmd-ipc-docs dev",
+    "docs:build": "yarn workspace @coralstack/cmd-ipc-docs build",
+    "test": "vitest",
+    "test:ui": "vitest --ui",
+    "test:run": "vitest run"
+  },
+  "engines": {
+    "node": ">=20.18.2"
+  },
+  "workspaces": {
+    "packages": [
+      ".",
+      "docs",
+      "examples/*",
+      "examples/electron/packages/*",
+      "examples/cf-worker/packages/*"
+    ]
+  },
+  "resolutions": {
+    "@types/node": "^25.0.3",
+    "typescript": "^5.9.3",
+    "webpack": "^5.98.0",
+    "vitest": "^4.0.16"
+  },
+  "dependencies": {
+    "@valibot/to-json-schema": "^1.5.0",
+    "reflect-metadata": "0.2.2",
+    "valibot": "^1.2.0"
+  },
+  "devDependencies": {
+    "@eslint/compat": "^2.0.0",
+    "@types/node": "*",
+    "@typescript-eslint/eslint-plugin": "^8.50.0",
+    "@typescript-eslint/parser": "^8.50.0",
+    "@vitest/ui": "^4.0.16",
+    "eslint": "^9.22.0",
+    "eslint-config-prettier": "10.0.1",
+    "eslint-plugin-react": "^7.37.4",
+    "eslint-plugin-react-hooks": "^7.0.1",
+    "prettier": "3.5.1",
+    "prettier-plugin-organize-imports": "^4.3.0",
+    "tsup": "^8.5.1",
+    "typescript": "*",
+    "vitest": "*"
+  },
+  "packageManager": "yarn@4.6.0"
+}
