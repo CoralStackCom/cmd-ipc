@@ -44,8 +44,8 @@ See the [Quick Start Guide](https://coralstack.com/cmd-ipc/getting-started/quick
 
 ## Examples
 
-| Example                                                                                 | Description                             | Run Command                       |
-| --------------------------------------------------------------------------------------- | --------------------------------------- | --------------------------------- |
+| Example                                                                           | Description                             | Run Command                       |
+| --------------------------------------------------------------------------------- | --------------------------------------- | --------------------------------- |
 | [Web Workers](https://coralstack.com/cmd-ipc/examples/web-workers/)               | Background computation with Web Workers | `yarn start:examples-web-workers` |
 | [Electron](https://coralstack.com/cmd-ipc/examples/electron/)                     | Multi-process Electron.js architecture  | `yarn start:examples-electron`    |
 | [Cloudflare Workers](https://coralstack.com/cmd-ipc/examples/cloudflare-workers/) | HTTP-based commands at the edge         | `yarn start:examples-cf-worker`   |
@@ -72,6 +72,19 @@ yarn build        # Build the library
 yarn test         # Run tests in watch mode
 yarn test:run     # Run tests once
 yarn test:ui      # Run tests with Vitest UI
+```
+
+### Publishing to NPM
+
+A Github action is configured to push new releases of the library to NPM when a new version/tag is added:
+
+```bash
+# Create and push a release
+# npm version patch # 1.0.0 → 1.0.1
+# npm version minor # 1.0.0 → 1.1.0
+# npm version major # 1.0.0 → 2.0.0
+npm version patch   # bumps version and creates tag
+git push origin main --tags
 ```
 
 ### Other Commands
