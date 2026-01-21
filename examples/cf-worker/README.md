@@ -2,7 +2,7 @@
 
 HTTP-based commands with Cloudflare Workers and schema generation.
 
-**[📖 Full Documentation](https://coralstack.github.io/cmd-ipc/examples/cloudflare-workers/)**
+**[📖 Full Documentation](https://coralstack.com/cmd-ipc/examples/cloudflare-workers/)**
 
 ## Overview
 

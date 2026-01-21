@@ -2,7 +2,7 @@
 
 Expose cmd-ipc commands as AI agent tools via tool calling.
 
-**[📖 Full Documentation](https://coralstack.github.io/cmd-ipc/examples/mcp-agent/)**
+**[📖 Full Documentation](https://coralstack.com/cmd-ipc/examples/mcp-agent/)**
 
 ## Overview
 

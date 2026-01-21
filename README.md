@@ -2,7 +2,7 @@
 
 A type-safe Inter-Process Communication (IPC) library for running commands across multiple processes and services.
 
-**[📖 Full Documentation](https://coralstack.github.io/cmd-ipc/)**
+**[📖 Full Documentation](https://coralstack.com/cmd-ipc/)**
 
 ## Overview
 
@@ -40,16 +40,16 @@ const response = await registry.executeCommand('hello.world', { name: 'World' })
 console.log(response.message) // "Hello World"
 ```
 
-See the [Quick Start Guide](https://coralstack.github.io/cmd-ipc/getting-started/quick-start/) for more details.
+See the [Quick Start Guide](https://coralstack.com/cmd-ipc/getting-started/quick-start/) for more details.
 
 ## Examples
 
 | Example                                                                                 | Description                             | Run Command                       |
 | --------------------------------------------------------------------------------------- | --------------------------------------- | --------------------------------- |
-| [Web Workers](https://coralstack.github.io/cmd-ipc/examples/web-workers/)               | Background computation with Web Workers | `yarn start:examples-web-workers` |
-| [Electron](https://coralstack.github.io/cmd-ipc/examples/electron/)                     | Multi-process Electron.js architecture  | `yarn start:examples-electron`    |
-| [Cloudflare Workers](https://coralstack.github.io/cmd-ipc/examples/cloudflare-workers/) | HTTP-based commands at the edge         | `yarn start:examples-cf-worker`   |
-| [AI Agent MCP](https://coralstack.github.io/cmd-ipc/examples/mcp-agent/)                | Expose commands as AI agent tools       | `yarn start:examples-agent-mcp`   |
+| [Web Workers](https://coralstack.com/cmd-ipc/examples/web-workers/)               | Background computation with Web Workers | `yarn start:examples-web-workers` |
+| [Electron](https://coralstack.com/cmd-ipc/examples/electron/)                     | Multi-process Electron.js architecture  | `yarn start:examples-electron`    |
+| [Cloudflare Workers](https://coralstack.com/cmd-ipc/examples/cloudflare-workers/) | HTTP-based commands at the edge         | `yarn start:examples-cf-worker`   |
+| [AI Agent MCP](https://coralstack.com/cmd-ipc/examples/mcp-agent/)                | Expose commands as AI agent tools       | `yarn start:examples-agent-mcp`   |
 
 ## Development
 

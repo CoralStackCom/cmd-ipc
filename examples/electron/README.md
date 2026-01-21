@@ -2,7 +2,7 @@
 
 A multi-process Command IPC architecture for building extensible, performant Electron.js apps.
 
-**[📖 Full Documentation](https://coralstack.github.io/cmd-ipc/examples/electron/)**
+**[📖 Full Documentation](https://coralstack.com/cmd-ipc/examples/electron/)**
 
 ## Overview
 

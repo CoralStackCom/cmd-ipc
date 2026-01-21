@@ -2,7 +2,7 @@
 
 Offload computation to background threads while keeping the UI responsive.
 
-**[📖 Full Documentation](https://coralstack.github.io/cmd-ipc/examples/web-workers/)**
+**[📖 Full Documentation](https://coralstack.com/cmd-ipc/examples/web-workers/)**
 
 ## Overview
 

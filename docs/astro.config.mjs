@@ -6,7 +6,7 @@ import { sidebar } from './src/config/sidebar'
 import llmify from './src/integrations/llmify'
 
 export default defineConfig({
-  site: 'https://coralstackcom.github.io',
+  site: 'https://coralstack.com/cmd-ipc',
   base: '/cmd-ipc',
   integrations: [
     mermaid(),
