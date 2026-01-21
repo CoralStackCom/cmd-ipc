@@ -23,7 +23,7 @@ jobs:
         run: yarn install --immutable
 
       - name: Build
-        run: yarn build
+        run: yarn build && yarn workspace @examples/electron-core build
 
       - name: Type checks
         run: yarn typecheck && yarn typecheck:examples
