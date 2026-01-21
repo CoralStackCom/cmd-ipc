@@ -22,6 +22,9 @@ jobs:
       - name: Install dependencies
         run: yarn install --immutable
 
+      - name: Build
+        run: yarn build
+
       - name: Type checks
         run: yarn typecheck && yarn typecheck:examples
 
@@ -30,9 +33,6 @@ jobs:
 
       - name: Format check
         run: yarn prettify --check
-
-      - name: Build
-        run: yarn build
 
       - name: Run tests
         run: yarn test:run
