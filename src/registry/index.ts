@@ -1,4 +1,5 @@
 export * from './command-errors'
+export { validateMessage } from './command-message-schemas'
 export * from './command-registry'
 export * from './command-registry-events'
 export * from './command-registry-interface'

@@ -1,5 +1,5 @@
 import type { ICommandDefinitionBase } from '../../registry'
-import type { IMessageListCommandsResponse } from '../../registry/command-messages-types'
+import type { IMessageListCommandsResponse } from '../../registry/command-message-schemas'
 
 /**
  * Fetch Schema Options

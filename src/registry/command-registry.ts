@@ -23,8 +23,8 @@ import type {
   IMessageListCommandsResponse,
   IMessageRegisterCommandRequest,
   IMessageRegisterCommandResponse,
-} from './command-messages-types'
-import { MessageType } from './command-messages-types'
+} from './command-message-schemas'
+import { MessageType } from './command-message-schemas'
 import type {
   ICommandRegistryConfig,
   ICommandRegistrySchemas,

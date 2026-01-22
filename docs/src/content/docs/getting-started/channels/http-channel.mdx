@@ -71,6 +71,95 @@ await registry.executeCommand('api.user.create', { name: 'John' })
 // Sends to server as 'user.create' (prefix stripped)
 ```
 
+### Middleware
+
+HTTPChannel supports middleware for modifying requests before they're sent. Use the `use()` method to add middleware functions that execute in the order they're added.
+
+```typescript
+import { HTTPChannel } from '@coralstack/cmd-ipc'
+
+const channel = new HTTPChannel({
+  id: 'api',
+  baseUrl: 'https://api.example.com',
+})
+
+// Add middleware using use()
+channel.use(async (ctx, next) => {
+  // Modify request before sending
+  ctx.headers.set('Authorization', `Bearer ${getToken()}`)
+
+  // Call next() to continue the chain
+  const result = await next()
+
+  // Optionally modify the response
+  return result
+})
+```
+
+#### Middleware Context
+
+Each middleware receives a context object with:
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `url` | `string` | The request URL |
+| `headers` | `Headers` | HTTP headers (modifiable) |
+| `message` | `CommandMessage` | The request message |
+| `abortController` | `AbortController` | Controller to abort the request |
+
+#### Authentication Middleware
+
+```typescript
+channel.use(async (ctx, next) => {
+  const token = await getAuthToken()
+  ctx.headers.set('Authorization', `Bearer ${token}`)
+  return next()
+})
+```
+
+#### Logging Middleware
+
+```typescript
+channel.use(async (ctx, next) => {
+  console.log('Request:', ctx.url, ctx.message)
+  const result = await next()
+  console.log('Response:', result)
+  return result
+})
+```
+
+#### Retry Middleware
+
+```typescript
+channel.use(async (ctx, next) => {
+  for (let i = 0; i < 3; i++) {
+    try {
+      return await next()
+    } catch (err) {
+      if (i === 2) throw err
+      await new Promise(r => setTimeout(r, 1000 * (i + 1)))
+    }
+  }
+})
+```
+
+#### Chaining Middleware
+
+Middleware can be chained using fluent syntax:
+
+```typescript
+channel
+  .use(authMiddleware)
+  .use(loggingMiddleware)
+  .use(retryMiddleware)
+
+await registry.registerChannel(channel)
+```
+
+<Aside>
+  Middleware is only used in client mode. In server mode, use your HTTP framework's middleware (Express, Hono, etc.) instead.
+</Aside>
+
 ## Server Mode
 
 Server mode receives HTTP requests and processes them via the registry.
@@ -90,19 +179,31 @@ await registry.registerChannel(channel)
 
 ### Handling Requests
 
-Use `handleMessage()` to process incoming HTTP requests:
+Use `handleMessage()` to process incoming HTTP requests. The method validates the message schema and processes allowed message types (`list.commands.request`, `list.commands.response`, `execute.command.request`, `execute.command.response`).
 
 <Tabs>
   <TabItem label="Express">
 ```typescript
 import express from 'express'
+import { InvalidMessageError } from '@coralstack/cmd-ipc'
 
 const app = express()
 app.use(express.json())
 
 app.post('/cmd', async (req, res) => {
-  const response = await channel.handleMessage(req.body)
-  res.json(response)
+  try {
+    const response = await channel.handleMessage(req.body)
+    // Response is undefined for forbidden message types (register, event)
+    if (response === undefined) {
+      return res.status(403).json({ error: 'Forbidden message type' })
+    }
+    res.json(response)
+  } catch (err) {
+    if (err instanceof InvalidMessageError) {
+      return res.status(400).json({ error: 'Invalid message format', issues: err.issues })
+    }
+    throw err
+  }
 })
 
 app.get('/cmds.json', (req, res) => {
@@ -117,16 +218,35 @@ app.listen(3000)
   </TabItem>
   <TabItem label="Cloudflare Workers">
 ```typescript
+import { InvalidMessageError } from '@coralstack/cmd-ipc'
+
 export default {
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url)
 
     if (request.method === 'POST' && url.pathname === '/cmd') {
-      const body = await request.json()
-      const response = await channel.handleMessage(body)
-      return new Response(JSON.stringify(response), {
-        headers: { 'Content-Type': 'application/json' }
-      })
+      try {
+        const body = await request.json()
+        const response = await channel.handleMessage(body)
+        // Response is undefined for forbidden message types (register, event)
+        if (response === undefined) {
+          return new Response(JSON.stringify({ error: 'Forbidden message type' }), {
+            status: 403,
+            headers: { 'Content-Type': 'application/json' }
+          })
+        }
+        return new Response(JSON.stringify(response), {
+          headers: { 'Content-Type': 'application/json' }
+        })
+      } catch (err) {
+        if (err instanceof InvalidMessageError) {
+          return new Response(JSON.stringify({ error: 'Invalid message format' }), {
+            status: 400,
+            headers: { 'Content-Type': 'application/json' }
+          })
+        }
+        throw err
+      }
     }
 
     if (request.method === 'GET' && url.pathname === '/cmds.json') {
@@ -146,6 +266,7 @@ export default {
   <TabItem label="Node.js HTTP">
 ```typescript
 import { createServer } from 'http'
+import { InvalidMessageError } from '@coralstack/cmd-ipc'
 
 const server = createServer(async (req, res) => {
   if (req.method === 'POST' && req.url === '/cmd') {
@@ -153,10 +274,24 @@ const server = createServer(async (req, res) => {
     for await (const chunk of req) chunks.push(chunk)
     const body = JSON.parse(Buffer.concat(chunks).toString())
 
-    const response = await channel.handleMessage(body)
-
-    res.writeHead(200, { 'Content-Type': 'application/json' })
-    res.end(JSON.stringify(response))
+    try {
+      const response = await channel.handleMessage(body)
+      // Response is undefined for forbidden message types (register, event)
+      if (response === undefined) {
+        res.writeHead(403, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'Forbidden message type' }))
+        return
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify(response))
+    } catch (err) {
+      if (err instanceof InvalidMessageError) {
+        res.writeHead(400, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'Invalid message format' }))
+        return
+      }
+      throw err
+    }
     return
   }
 
@@ -177,6 +312,22 @@ server.listen(3000)
 ```
   </TabItem>
 </Tabs>
+
+### Error Handling
+
+`handleMessage()` has specific error behaviors:
+
+| Condition | Behavior |
+|-----------|----------|
+| Invalid message schema | Throws `InvalidMessageError` with validation issues |
+| Forbidden message type | Returns `undefined` (register, event messages are blocked) |
+| Channel closed | Throws `Error: Channel is closed` |
+| Client mode | Throws `Error: handleMessage() can only be used in server mode` |
+| Request timeout | Throws `Error: Request {id} timed out after {timeout}ms` |
+
+<Aside type="caution">
+  Forbidden message types (`register.command.request`, `register.command.response`, `event`) return `undefined` to prevent unauthorized command registration or event injection over HTTP. Your server should handle this case appropriately.
+</Aside>
 
 ## CORS Configuration
 
