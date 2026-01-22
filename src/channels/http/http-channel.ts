@@ -222,7 +222,7 @@ export class HTTPChannel implements ICommandChannel {
 
     // Check message type is allowed
     if (!ALLOWED_MESSAGE_TYPES.has(cmdMessage.type)) {
-      return
+      throw new Error(`Message type ${cmdMessage.type} is not allowed`)
     }
 
     return new Promise<unknown>((resolve, reject) => {

@@ -1,6 +1,11 @@
 import 'reflect-metadata'
 
-import { CommandRegistry, HTTPChannel, registerCommands } from '@coralstack/cmd-ipc'
+import {
+  CommandRegistry,
+  HTTPChannel,
+  publishSchemaDoc,
+  registerCommands,
+} from '@coralstack/cmd-ipc'
 import { TestLogger } from '@coralstack/cmd-ipc/testing'
 
 import { WorkerCommandSchema } from './command-schema'
@@ -75,7 +80,7 @@ export default {
 
     // Command schema endpoint
     if (request.method === 'GET' && url.pathname === '/cmds.json') {
-      return new Response(JSON.stringify({ status: 'ok', commands: registry.listCommands() }), {
+      return new Response(JSON.stringify(publishSchemaDoc(registry.listCommands())), {
         headers: {
           'Content-Type': 'application/json',
           ...corsHeaders,

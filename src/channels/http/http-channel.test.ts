@@ -441,7 +441,7 @@ describe('HTTPChannel', () => {
       await expect(channel.handleMessage({ id: 'test-123' })).rejects.toThrow(InvalidMessageError)
     })
 
-    it('should silently ignore forbidden message types', async () => {
+    it('should throw error for forbidden message types', async () => {
       const channel = new HTTPChannel({
         id: 'test-channel',
       })
@@ -451,29 +451,32 @@ describe('HTTPChannel', () => {
 
       await channel.start()
 
-      // Forbidden message types should return undefined and not emit to message handler
-      const response1 = await channel.handleMessage({
-        type: MessageType.REGISTER_COMMAND_REQUEST,
-        id: 'register-123',
-        command: { id: 'malicious.cmd' },
-      })
-      expect(response1).toBeUndefined()
+      // Forbidden message types should throw an error
+      await expect(
+        channel.handleMessage({
+          type: MessageType.REGISTER_COMMAND_REQUEST,
+          id: 'register-123',
+          command: { id: 'malicious.cmd' },
+        }),
+      ).rejects.toThrow(`Message type ${MessageType.REGISTER_COMMAND_REQUEST} is not allowed`)
 
-      const response2 = await channel.handleMessage({
-        type: MessageType.REGISTER_COMMAND_RESPONSE,
-        id: 'register-123',
-        thid: 'some-thid',
-        response: { ok: true },
-      })
-      expect(response2).toBeUndefined()
+      await expect(
+        channel.handleMessage({
+          type: MessageType.REGISTER_COMMAND_RESPONSE,
+          id: 'register-123',
+          thid: 'some-thid',
+          response: { ok: true },
+        }),
+      ).rejects.toThrow(`Message type ${MessageType.REGISTER_COMMAND_RESPONSE} is not allowed`)
 
-      const response3 = await channel.handleMessage({
-        type: MessageType.EVENT,
-        id: 'event-123',
-        eventId: 'user.updated',
-        payload: { userId: '456' },
-      })
-      expect(response3).toBeUndefined()
+      await expect(
+        channel.handleMessage({
+          type: MessageType.EVENT,
+          id: 'event-123',
+          eventId: 'user.updated',
+          payload: { userId: '456' },
+        }),
+      ).rejects.toThrow(`Message type ${MessageType.EVENT} is not allowed`)
 
       // Message handler should not have been called for any forbidden messages
       expect(messageHandler).not.toHaveBeenCalled()

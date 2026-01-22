@@ -185,7 +185,7 @@ Use `handleMessage()` to process incoming HTTP requests. The method validates th
   <TabItem label="Express">
 ```typescript
 import express from 'express'
-import { InvalidMessageError } from '@coralstack/cmd-ipc'
+import { InvalidMessageError, publishSchemaDoc } from '@coralstack/cmd-ipc'
 
 const app = express()
 app.use(express.json())
@@ -193,24 +193,21 @@ app.use(express.json())
 app.post('/cmd', async (req, res) => {
   try {
     const response = await channel.handleMessage(req.body)
-    // Response is undefined for forbidden message types (register, event)
-    if (response === undefined) {
-      return res.status(403).json({ error: 'Forbidden message type' })
-    }
     res.json(response)
   } catch (err) {
     if (err instanceof InvalidMessageError) {
       return res.status(400).json({ error: 'Invalid message format', issues: err.issues })
+    }
+    // Forbidden message types and other errors
+    if (err instanceof Error && err.message.includes('is not allowed')) {
+      return res.status(403).json({ error: err.message })
     }
     throw err
   }
 })
 
 app.get('/cmds.json', (req, res) => {
-  res.json({
-    status: 'ok',
-    commands: registry.listCommands()
-  })
+  res.json(publishSchemaDoc(registry.listCommands()))
 })
 
 app.listen(3000)
@@ -218,7 +215,7 @@ app.listen(3000)
   </TabItem>
   <TabItem label="Cloudflare Workers">
 ```typescript
-import { InvalidMessageError } from '@coralstack/cmd-ipc'
+import { InvalidMessageError, publishSchemaDoc } from '@coralstack/cmd-ipc'
 
 export default {
   async fetch(request: Request): Promise<Response> {
@@ -228,13 +225,6 @@ export default {
       try {
         const body = await request.json()
         const response = await channel.handleMessage(body)
-        // Response is undefined for forbidden message types (register, event)
-        if (response === undefined) {
-          return new Response(JSON.stringify({ error: 'Forbidden message type' }), {
-            status: 403,
-            headers: { 'Content-Type': 'application/json' }
-          })
-        }
         return new Response(JSON.stringify(response), {
           headers: { 'Content-Type': 'application/json' }
         })
@@ -245,15 +235,19 @@ export default {
             headers: { 'Content-Type': 'application/json' }
           })
         }
+        // Forbidden message types and other errors
+        if (err instanceof Error && err.message.includes('is not allowed')) {
+          return new Response(JSON.stringify({ error: err.message }), {
+            status: 403,
+            headers: { 'Content-Type': 'application/json' }
+          })
+        }
         throw err
       }
     }
 
     if (request.method === 'GET' && url.pathname === '/cmds.json') {
-      return new Response(JSON.stringify({
-        status: 'ok',
-        commands: registry.listCommands()
-      }), {
+      return new Response(JSON.stringify(publishSchemaDoc(registry.listCommands())), {
         headers: { 'Content-Type': 'application/json' }
       })
     }
@@ -266,7 +260,7 @@ export default {
   <TabItem label="Node.js HTTP">
 ```typescript
 import { createServer } from 'http'
-import { InvalidMessageError } from '@coralstack/cmd-ipc'
+import { InvalidMessageError, publishSchemaDoc } from '@coralstack/cmd-ipc'
 
 const server = createServer(async (req, res) => {
   if (req.method === 'POST' && req.url === '/cmd') {
@@ -276,18 +270,18 @@ const server = createServer(async (req, res) => {
 
     try {
       const response = await channel.handleMessage(body)
-      // Response is undefined for forbidden message types (register, event)
-      if (response === undefined) {
-        res.writeHead(403, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ error: 'Forbidden message type' }))
-        return
-      }
       res.writeHead(200, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify(response))
     } catch (err) {
       if (err instanceof InvalidMessageError) {
         res.writeHead(400, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ error: 'Invalid message format' }))
+        return
+      }
+      // Forbidden message types and other errors
+      if (err instanceof Error && err.message.includes('is not allowed')) {
+        res.writeHead(403, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: err.message }))
         return
       }
       throw err
@@ -297,10 +291,7 @@ const server = createServer(async (req, res) => {
 
   if (req.method === 'GET' && req.url === '/cmds.json') {
     res.writeHead(200, { 'Content-Type': 'application/json' })
-    res.end(JSON.stringify({
-      status: 'ok',
-      commands: registry.listCommands()
-    }))
+    res.end(JSON.stringify(publishSchemaDoc(registry.listCommands())))
     return
   }
 
@@ -320,16 +311,12 @@ server.listen(3000)
 | Condition | Behavior |
 |-----------|----------|
 | Invalid message schema | Throws `InvalidMessageError` with validation issues |
-| Forbidden message type | Returns `undefined` (register, event messages are blocked) |
+| Forbidden message type | Throws `Message type ${message.type} is not allowed` |
 | Channel closed | Throws `Error: Channel is closed` |
 | Client mode | Throws `Error: handleMessage() can only be used in server mode` |
 | Request timeout | Throws `Error: Request {id} timed out after {timeout}ms` |
 
-<Aside type="caution">
-  Forbidden message types (`register.command.request`, `register.command.response`, `event`) return `undefined` to prevent unauthorized command registration or event injection over HTTP. Your server should handle this case appropriately.
-</Aside>
-
-## CORS Configuration
+### CORS Configuration
 
 For browser clients, configure CORS headers:
 
@@ -354,17 +341,19 @@ return new Response(JSON.stringify(response), {
 })
 ```
 
-## Endpoints
+### Endpoints
 
-HTTPChannel expects two endpoints on the server:
+To support HTTPChannel and the CLI to generate local schemas for clients, your server should support two endpoints:
 
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
 | `/cmd` | POST | Execute commands (authenticated) |
 | `/cmds.json` | GET | Schema discovery for CLI (usually unauthenticated) |
 
+Use the `publishSchemaDoc()` helper function to generate the correct schema document format for `/cmds.json`. It automatically filters out private commands and formats the response for the CLI.
+
 <Aside>
-  The `/cmds.json` endpoint is typically left unauthenticated to allow the CLI to generate TypeScript schemas from remote services. Private commands (prefixed with `_`) are automatically excluded from this endpoint.
+  The `/cmds.json` endpoint is typically left unauthenticated to allow the CLI to generate TypeScript schemas from remote services. Private commands (prefixed with `_`) are automatically excluded by `publishSchemaDoc()`.
 </Aside>
 
 ## Common Issues
