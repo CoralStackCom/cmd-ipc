@@ -72,46 +72,58 @@ class MCPServerManagerClass {
   }
 
   /**
-   * Generate a server ID from the URL domain
-   * e.g., https://docs.mcp.cloudflare.com -> docs-mcp-cloudflare-com
+   * Validate server name format.
+   * Must be a valid identifier: alphanumeric, dashes, dots, underscores.
+   * Must start with a letter or underscore.
+   * No spaces or special characters.
    */
-  private _generateServerIdFromUrl(url: string): string {
-    try {
-      const urlObj = new URL(url)
-      // Convert hostname to ID: replace dots with dashes
-      return urlObj.hostname.replace(/\./g, '-')
-    } catch {
-      // Fallback if URL parsing fails
-      return `mcp-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
+  private _validateServerName(name: string): void {
+    if (!name || name.trim().length === 0) {
+      throw new Error('Server name is required')
+    }
+
+    // Must start with letter or underscore, then allow letters, numbers, dashes, dots, underscores
+    const validNamePattern = /^[a-zA-Z_][a-zA-Z0-9._-]*$/
+    if (!validNamePattern.test(name)) {
+      throw new Error(
+        'Server name must start with a letter or underscore, and contain only letters, numbers, dashes, dots, or underscores (no spaces or special characters)',
+      )
+    }
+
+    // Reasonable length limit
+    if (name.length > 64) {
+      throw new Error('Server name must be 64 characters or less')
     }
   }
 
   /**
    * Add a new MCP server connection
    *
+   * @param name - The unique name/identifier for this server (used as command prefix)
    * @param url - The base URL of the MCP server (e.g., https://mcp.example.com)
    * @returns The server connection object
    */
-  public async addServer(url: string): Promise<MCPServerConnection> {
+  public async addServer(name: string, url: string): Promise<MCPServerConnection> {
+    // Validate server name
+    this._validateServerName(name)
+    const serverId = name.trim()
+
     // Normalize URL
     const normalizedUrl = url.replace(/\/$/, '')
+
+    // Check if already connected by server ID/name
+    const existingServerById = this._servers.get(serverId)
+    if (existingServerById) {
+      throw new Error(`A server with the name "${serverId}" is already connected`)
+    }
 
     // Check if already connected by URL
     const existingServerByUrl = Array.from(this._servers.values()).find(
       (s) => s.url === normalizedUrl,
     )
     if (existingServerByUrl) {
-      throw new Error(`This MCP server is already connected: ${normalizedUrl}`)
-    }
-
-    // Generate server ID from URL domain (e.g., docs-mcp-cloudflare-com)
-    const serverId = this._generateServerIdFromUrl(normalizedUrl)
-
-    // Check if already connected by server ID (same domain)
-    const existingServerById = this._servers.get(serverId)
-    if (existingServerById) {
       throw new Error(
-        `An MCP server with the same domain is already connected: ${existingServerById.url}`,
+        `This MCP server URL is already connected as "${existingServerByUrl.id}"`,
       )
     }
 

@@ -788,6 +788,7 @@ footer a:hover {
   gap: 12px;
 }
 
+.mcp-name-input,
 .mcp-url-input {
   flex: 1;
   padding: 12px 16px;
@@ -798,16 +799,23 @@ footer a:hover {
   font-size: 0.95rem;
 }
 
+.mcp-name-input {
+  flex: 0 0 200px;
+}
+
+.mcp-name-input:focus,
 .mcp-url-input:focus {
   outline: none;
   border-color: #6366f1;
 }
 
+.mcp-name-input:disabled,
 .mcp-url-input:disabled {
   opacity: 0.6;
   cursor: not-allowed;
 }
 
+.mcp-name-input::placeholder,
 .mcp-url-input::placeholder {
   color: #666;
 }
@@ -832,6 +840,12 @@ footer a:hover {
 .mcp-add-button:disabled {
   background: #444;
   cursor: not-allowed;
+}
+
+.mcp-form-hint {
+  margin-top: 8px;
+  color: #666;
+  font-size: 0.8rem;
 }
 
 .mcp-form-error {

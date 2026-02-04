@@ -105,20 +105,22 @@ function ToolItem({ tool }: { tool: MCPToolInfo }) {
 /**
  * Add server form component
  */
-function AddServerForm({ onAdd }: { onAdd: (url: string) => Promise<void> }) {
+function AddServerForm({ onAdd }: { onAdd: (name: string, url: string) => Promise<void> }) {
+  const [name, setName] = useState('')
   const [url, setUrl] = useState('')
   const [isAdding, setIsAdding] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!url.trim()) return
+    if (!name.trim() || !url.trim()) return
 
     setIsAdding(true)
     setError(null)
 
     try {
-      await onAdd(url.trim())
+      await onAdd(name.trim(), url.trim())
+      setName('')
       setUrl('')
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
@@ -131,6 +133,14 @@ function AddServerForm({ onAdd }: { onAdd: (url: string) => Promise<void> }) {
     <form className="mcp-add-server-form" onSubmit={handleSubmit}>
       <div className="mcp-form-row">
         <input
+          type="text"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="Server name (e.g., cloudflare-docs)"
+          disabled={isAdding}
+          className="mcp-name-input"
+        />
+        <input
           type="url"
           value={url}
           onChange={(e) => setUrl(e.target.value)}
@@ -138,9 +148,17 @@ function AddServerForm({ onAdd }: { onAdd: (url: string) => Promise<void> }) {
           disabled={isAdding}
           className="mcp-url-input"
         />
-        <button type="submit" disabled={isAdding || !url.trim()} className="mcp-add-button">
+        <button
+          type="submit"
+          disabled={isAdding || !name.trim() || !url.trim()}
+          className="mcp-add-button"
+        >
           {isAdding ? 'Connecting...' : 'Add Server'}
         </button>
+      </div>
+      <div className="mcp-form-hint">
+        Name must start with a letter, containing only letters, numbers, dashes, dots, or
+        underscores
       </div>
       {error && <div className="mcp-form-error">{error}</div>}
     </form>
@@ -165,8 +183,8 @@ export function MCPServersTab({ onToolsChanged }: { onToolsChanged?: () => void 
     return unsubscribe
   }, [onToolsChanged])
 
-  const handleAddServer = async (url: string) => {
-    await MCPServerManager.addServer(url)
+  const handleAddServer = async (name: string, url: string) => {
+    await MCPServerManager.addServer(name, url)
   }
 
   const handleRemoveServer = async (serverId: string) => {
