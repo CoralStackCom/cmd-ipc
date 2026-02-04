@@ -1,16 +1,24 @@
 ---
 title: HTTPChannel
-description: Using HTTPChannel for HTTP-based command communication
+description: Using HTTPChannel for HTTP-based command communication with NDJSON streaming
 ---
 
 import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
-`HTTPChannel` enables command communication over HTTP using the [Protocol](/cmd-ipc/introduction/protocol/) message format. It supports both client and server modes, making it ideal for:
+`HTTPChannel` enables command communication over HTTP using the [Protocol](/cmd-ipc/introduction/protocol/) message format with **NDJSON (Newline-Delimited JSON) streaming**. It supports both client and server modes, making it ideal for:
 
 - REST API backends
 - Cloudflare Workers
 - Edge functions
 - Microservices communication
+
+## NDJSON Streaming
+
+All communication uses NDJSON streaming format. Each message is a JSON object followed by a newline character (`\n`). This enables efficient streaming responses and better memory usage for large payloads.
+
+```
+{"type":"execute.command.response","thid":"abc-123","response":{"ok":true,"result":"Hello"}}\n
+```
 
 ## Two Modes
 
@@ -23,7 +31,7 @@ HTTPChannel operates in two distinct modes:
 
 ## Client Mode
 
-Client mode sends HTTP POST requests to a remote server.
+Client mode sends HTTP POST requests with `Accept: application/x-ndjson` header and reads streaming NDJSON responses.
 
 ### Configuration
 
@@ -179,26 +187,33 @@ await registry.registerChannel(channel)
 
 ### Handling Requests
 
-Use `handleMessage()` to process incoming HTTP requests. The method validates the message schema and processes allowed message types (`list.commands.request`, `list.commands.response`, `execute.command.request`, `execute.command.response`).
+Use `handleRequest()` to process incoming HTTP requests. The method validates the message schema and processes allowed message types (`list.commands.request`, `list.commands.response`, `execute.command.request`, `execute.command.response`).
+
+`handleRequest()` returns a `ReadableStream` that can be used directly as the HTTP response body. The stream uses NDJSON format.
 
 <Tabs>
   <TabItem label="Express">
 ```typescript
 import express from 'express'
+import { Readable } from 'stream'
 import { InvalidMessageError, publishSchemaDoc } from '@coralstack/cmd-ipc'
 
 const app = express()
 app.use(express.json())
 
-app.post('/cmd', async (req, res) => {
+app.post('/cmd', (req, res) => {
   try {
-    const response = await channel.handleMessage(req.body)
-    res.json(response)
+    const stream = channel.handleRequest(req.body)
+
+    res.setHeader('Content-Type', 'application/x-ndjson')
+    res.setHeader('Transfer-Encoding', 'chunked')
+
+    // Convert Web ReadableStream to Node.js stream
+    Readable.fromWeb(stream).pipe(res)
   } catch (err) {
     if (err instanceof InvalidMessageError) {
       return res.status(400).json({ error: 'Invalid message format', issues: err.issues })
     }
-    // Forbidden message types and other errors
     if (err instanceof Error && err.message.includes('is not allowed')) {
       return res.status(403).json({ error: err.message })
     }
@@ -224,9 +239,13 @@ export default {
     if (request.method === 'POST' && url.pathname === '/cmd') {
       try {
         const body = await request.json()
-        const response = await channel.handleMessage(body)
-        return new Response(JSON.stringify(response), {
-          headers: { 'Content-Type': 'application/json' }
+        const stream = channel.handleRequest(body)
+
+        return new Response(stream, {
+          headers: {
+            'Content-Type': 'application/x-ndjson',
+            'Transfer-Encoding': 'chunked'
+          }
         })
       } catch (err) {
         if (err instanceof InvalidMessageError) {
@@ -235,7 +254,6 @@ export default {
             headers: { 'Content-Type': 'application/json' }
           })
         }
-        // Forbidden message types and other errors
         if (err instanceof Error && err.message.includes('is not allowed')) {
           return new Response(JSON.stringify({ error: err.message }), {
             status: 403,
@@ -260,6 +278,7 @@ export default {
   <TabItem label="Node.js HTTP">
 ```typescript
 import { createServer } from 'http'
+import { Readable } from 'stream'
 import { InvalidMessageError, publishSchemaDoc } from '@coralstack/cmd-ipc'
 
 const server = createServer(async (req, res) => {
@@ -269,16 +288,21 @@ const server = createServer(async (req, res) => {
     const body = JSON.parse(Buffer.concat(chunks).toString())
 
     try {
-      const response = await channel.handleMessage(body)
-      res.writeHead(200, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify(response))
+      const stream = channel.handleRequest(body)
+
+      res.writeHead(200, {
+        'Content-Type': 'application/x-ndjson',
+        'Transfer-Encoding': 'chunked'
+      })
+
+      // Convert Web ReadableStream to Node.js stream
+      Readable.fromWeb(stream).pipe(res)
     } catch (err) {
       if (err instanceof InvalidMessageError) {
         res.writeHead(400, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ error: 'Invalid message format' }))
         return
       }
-      // Forbidden message types and other errors
       if (err instanceof Error && err.message.includes('is not allowed')) {
         res.writeHead(403, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ error: err.message }))
@@ -306,15 +330,19 @@ server.listen(3000)
 
 ### Error Handling
 
-`handleMessage()` has specific error behaviors:
+`handleRequest()` has specific error behaviors:
 
 | Condition | Behavior |
 |-----------|----------|
 | Invalid message schema | Throws `InvalidMessageError` with validation issues |
-| Forbidden message type | Throws `Message type ${message.type} is not allowed` |
+| Forbidden message type | Throws `Error: Message type ${message.type} is not allowed` |
 | Channel closed | Throws `Error: Channel is closed` |
-| Client mode | Throws `Error: handleMessage() can only be used in server mode` |
-| Request timeout | Throws `Error: Request {id} timed out after {timeout}ms` |
+| Client mode | Throws `Error: handleRequest() can only be used in server mode` |
+| Request timeout | Writes timeout error to stream and closes it |
+
+<Aside type="note">
+  Unlike the previous `handleMessage()` method which returned a Promise, `handleRequest()` returns a `ReadableStream` synchronously. Timeouts are now written to the stream as error responses rather than thrown as exceptions.
+</Aside>
 
 ### CORS Configuration
 
@@ -332,10 +360,11 @@ if (request.method === 'OPTIONS') {
   return new Response(null, { headers: corsHeaders })
 }
 
-// Add to all responses
-return new Response(JSON.stringify(response), {
+// Add to streaming responses
+const stream = channel.handleRequest(body)
+return new Response(stream, {
   headers: {
-    'Content-Type': 'application/json',
+    'Content-Type': 'application/x-ndjson',
     ...corsHeaders
   }
 })

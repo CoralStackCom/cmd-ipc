@@ -36,15 +36,18 @@ const ALLOWED_MESSAGE_TYPES = new Set<string>([
 ])
 
 /**
- * HTTPChannel: Implements ICommandChannel using HTTP for communication.
+ * HTTPChannel: Implements ICommandChannel using HTTP streaming for communication.
+ *
+ * All communication uses newline-delimited JSON (NDJSON) streaming format.
  *
  * Supports two modes:
- * - **Client mode** (with baseUrl): Sends HTTP POST requests to a remote server.
+ * - **Client mode** (with baseUrl): Sends HTTP POST requests to a remote server
+ *   with `Accept: application/x-ndjson` header. Reads streaming NDJSON responses.
  *   `start()` fetches the remote command list and emits `register.command.request`
  *   for each command. `sendMessage()` sends POST requests and emits responses.
  *
  * - **Server mode** (without baseUrl): Receives HTTP requests from clients.
- *   `handleMessage()` triggers on('message') and waits for sendMessage() to resolve.
+ *   `handleRequest()` returns a ReadableStream for the HTTP response body.
  *   Used with any HTTP framework (Express, Cloudflare Workers, etc.)
  *
  * Middleware can be added in client mode to modify requests (e.g., add auth headers).
@@ -83,8 +86,8 @@ export class HTTPChannel implements ICommandChannel {
   /**
    * Start the channel.
    *
-   * - Client mode: Fetches commands from remote server, applies prefix,
-   *   emits register.command.request for each command
+   * - Client mode: Fetches commands from remote server using streaming,
+   *   applies prefix, emits register.command.request for each command
    * - Server mode: Resolves immediately
    */
   public async start(): Promise<void> {
@@ -93,8 +96,8 @@ export class HTTPChannel implements ICommandChannel {
     }
 
     if (this.mode === 'CLIENT') {
-      // Fetch commands from remote server
-      const response = (await this._post({
+      // Fetch commands from remote server using streaming
+      const response = (await this._postStreaming({
         id: crypto.randomUUID(),
         type: MessageType.LIST_COMMANDS_REQUEST,
       } satisfies IMessageListCommandsRequest)) as IMessageListCommandsResponse
@@ -140,7 +143,7 @@ export class HTTPChannel implements ICommandChannel {
   /**
    * Send a message to the channel.
    *
-   * - Client mode: Sends HTTP POST to /cmd, response triggers on('message').
+   * - Client mode: Sends HTTP POST to /cmd with streaming, response triggers on('message').
    *   If commandPrefix is configured, strips prefix from commandId before sending.
    * - Server mode: Resolves pending HTTP request with this message
    */
@@ -155,7 +158,7 @@ export class HTTPChannel implements ICommandChannel {
         return
       }
 
-      // Client mode: send POST, emit response
+      // Client mode: send POST with streaming, emit response
       let outgoingMessage = message
 
       // Strip prefix from commandId before sending to remote server
@@ -168,7 +171,7 @@ export class HTTPChannel implements ICommandChannel {
         }
       }
 
-      this._post(outgoingMessage)
+      this._postStreaming(outgoingMessage)
         .then((response) => this._emitMessage(response))
         .catch(() => {
           // Silently ignore errors - registry will handle via timeout
@@ -199,25 +202,38 @@ export class HTTPChannel implements ICommandChannel {
   /**
    * Server mode only: Handle an incoming HTTP request.
    *
-   * Triggers on('message') with the request body, waits for sendMessage() to be
-   * called with the response, then returns that response.
+   * Returns a ReadableStream that can be used as the HTTP response body.
+   * Uses newline-delimited JSON (NDJSON) format - each chunk is a JSON object
+   * followed by a newline character.
    *
-   * @param message - The HTTP request body
-   * @returns Promise that resolves with the response to send back
+   * @param message - The HTTP request body (parsed JSON)
+   * @returns ReadableStream to use as the HTTP response body
    * @throws Error if called in client mode or if channel is closed or if message is invalid
+   *
+   * @example
+   * ```typescript
+   * // In your HTTP handler (e.g., Cloudflare Worker)
+   * const stream = channel.handleRequest(body)
+   *
+   * return new Response(stream, {
+   *   headers: {
+   *     'Content-Type': 'application/x-ndjson',
+   *     'Transfer-Encoding': 'chunked'
+   *   }
+   * })
+   * ```
    */
-  public async handleMessage(message: unknown): Promise<unknown> {
+  public handleRequest(message: unknown): ReadableStream<Uint8Array> {
     if (this.mode === 'CLIENT') {
-      throw new Error('handleMessage() can only be used in server mode')
+      throw new Error('handleRequest() can only be used in server mode')
     }
 
     if (this._closed) {
       throw new Error('Channel is closed')
     }
 
-    // Validate messaage schema
+    // Validate message schema
     validateMessage(message)
-    // Cast to CommandMessage
     const cmdMessage = message as CommandMessage
 
     // Check message type is allowed
@@ -225,20 +241,64 @@ export class HTTPChannel implements ICommandChannel {
       throw new Error(`Message type ${cmdMessage.type} is not allowed`)
     }
 
-    return new Promise<unknown>((resolve, reject) => {
-      // Add timeout for pending requests to prevent memory leaks
-      const timeoutId = setTimeout(() => {
-        this._pendingRequests.delete(cmdMessage.id)
-        reject(new Error(`Request ${cmdMessage.id} timed out after ${this._timeout}ms`))
-      }, this._timeout)
+    // Create a ReadableStream for streaming responses
+    let streamController: ReadableStreamDefaultController<Uint8Array> | null = null
+    let isClosed = false
+    const encoder = new TextEncoder()
 
-      this._pendingRequests.set(cmdMessage.id, (response) => {
-        clearTimeout(timeoutId)
-        resolve(response)
-      })
-
-      this._emitMessage(cmdMessage)
+    const stream = new ReadableStream<Uint8Array>({
+      start: (controller) => {
+        streamController = controller
+      },
+      cancel: () => {
+        isClosed = true
+      },
     })
+
+    const writeChunk = (chunk: unknown) => {
+      if (isClosed || !streamController) return
+      // Write as NDJSON (newline-delimited JSON)
+      const data = JSON.stringify(chunk) + '\n'
+      streamController.enqueue(encoder.encode(data))
+    }
+
+    const closeStream = () => {
+      if (isClosed || !streamController) return
+      isClosed = true
+      streamController.close()
+    }
+
+    // Set up timeout
+    const timeoutId = setTimeout(() => {
+      this._pendingRequests.delete(cmdMessage.id)
+      if (!isClosed) {
+        writeChunk({
+          id: crypto.randomUUID(),
+          type: MessageType.EXECUTE_COMMAND_RESPONSE,
+          thid: cmdMessage.id,
+          response: {
+            ok: false,
+            error: {
+              code: 'timeout',
+              message: `Request ${cmdMessage.id} timed out after ${this._timeout}ms`,
+            },
+          },
+        })
+        closeStream()
+      }
+    }, this._timeout)
+
+    // Register the pending request to write response and close stream
+    this._pendingRequests.set(cmdMessage.id, (response) => {
+      clearTimeout(timeoutId)
+      writeChunk(response)
+      closeStream()
+    })
+
+    // Emit the message to trigger command execution
+    this._emitMessage(cmdMessage)
+
+    return stream
   }
 
   /**
@@ -277,12 +337,15 @@ export class HTTPChannel implements ICommandChannel {
   }
 
   /**
-   * Post a command message to the remote server (client mode only).
+   * Post a command message to the remote server using streaming (client mode only).
+   *
+   * Sends the request with `Accept: application/x-ndjson` header and reads
+   * the streaming NDJSON response.
    *
    * @param message - The command message to send
-   * @returns Promise that resolves with the response message
+   * @returns Promise that resolves with the first response message from the stream
    */
-  private async _post(message: CommandMessage): Promise<CommandMessage> {
+  private async _postStreaming(message: CommandMessage): Promise<CommandMessage> {
     if (this.mode === 'SERVER') {
       throw new Error('Cannot send HTTP request in server mode')
     }
@@ -293,7 +356,10 @@ export class HTTPChannel implements ICommandChannel {
     // Create middleware context
     const ctx: HTTPMiddlewareContext = {
       url: `${this._baseUrl}/cmd`,
-      headers: new Headers({ 'Content-Type': 'application/json' }),
+      headers: new Headers({
+        'Content-Type': 'application/json',
+        Accept: 'application/x-ndjson',
+      }),
       message,
       abortController: controller,
     }
@@ -314,9 +380,46 @@ export class HTTPChannel implements ICommandChannel {
           throw new Error(`HTTP ${response.status}: ${response.statusText}`)
         }
 
-        const msg = await response.json()
-        validateMessage(msg)
-        return msg
+        // Read the NDJSON stream and return the first complete message
+        const reader = response.body?.getReader()
+        if (!reader) {
+          throw new Error('Response body is not readable')
+        }
+
+        const decoder = new TextDecoder()
+        let buffer = ''
+
+        while (true) {
+          const { value, done } = await reader.read()
+
+          if (done) {
+            // Stream ended, try to parse any remaining buffer
+            if (buffer.trim()) {
+              const msg = JSON.parse(buffer.trim())
+              validateMessage(msg)
+              return msg
+            }
+            throw new Error('Stream ended without a complete message')
+          }
+
+          buffer += decoder.decode(value, { stream: true })
+
+          // Check for complete NDJSON lines
+          const lines = buffer.split('\n')
+          for (let i = 0; i < lines.length - 1; i++) {
+            const line = lines[i].trim()
+            if (line) {
+              // We have a complete JSON line - parse and return it
+              const msg = JSON.parse(line)
+              validateMessage(msg)
+              // Cancel the reader since we got our response
+              await reader.cancel()
+              return msg
+            }
+          }
+          // Keep the incomplete last line in the buffer
+          buffer = lines[lines.length - 1]
+        }
       } catch (error) {
         clearTimeout(timeoutId)
         throw error

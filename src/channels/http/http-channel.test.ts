@@ -4,6 +4,21 @@ import { MessageType } from '../../registry/command-message-schemas'
 import { HTTPChannel } from './http-channel'
 
 /**
+ * Helper to create a mock streaming response (NDJSON format)
+ */
+function createStreamingResponse(messages: object[]): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder()
+  const ndjson = messages.map((msg) => JSON.stringify(msg)).join('\n') + '\n'
+
+  return new ReadableStream({
+    start(controller) {
+      controller.enqueue(encoder.encode(ndjson))
+      controller.close()
+    },
+  })
+}
+
+/**
  * Helper to create a valid LIST_COMMANDS_RESPONSE mock
  */
 function createListCommandsResponse(
@@ -30,6 +45,27 @@ function createExecuteCommandResponse(thid: string, result?: unknown) {
   }
 }
 
+/**
+ * Helper to read all chunks from a stream and parse NDJSON
+ */
+async function readStreamAsNDJSON(stream: ReadableStream<Uint8Array>): Promise<object[]> {
+  const reader = stream.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  while (true) {
+    const { value, done } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+  }
+
+  return buffer
+    .trim()
+    .split('\n')
+    .filter((line) => line.trim())
+    .map((line) => JSON.parse(line))
+}
+
 describe('HTTPChannel', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -39,8 +75,8 @@ describe('HTTPChannel', () => {
     vi.restoreAllMocks()
   })
 
-  describe('Client Mode', () => {
-    it('should fetch commands on start() and emit register.command.request for each', async () => {
+  describe('Client Mode (with streaming)', () => {
+    it('should fetch commands on start() using streaming and emit register.command.request for each', async () => {
       const mockResponse = createListCommandsResponse([
         { id: 'user.create', description: 'Create a user' },
         { id: 'user.get', description: 'Get a user' },
@@ -50,7 +86,7 @@ describe('HTTPChannel', () => {
         'fetch',
         vi.fn().mockResolvedValue({
           ok: true,
-          json: () => Promise.resolve(mockResponse),
+          body: createStreamingResponse([mockResponse]),
         }),
       )
 
@@ -71,6 +107,7 @@ describe('HTTPChannel', () => {
       const options = fetchCall[1] as RequestInit
       expect(options.method).toBe('POST')
       expect((options.headers as Headers).get('Content-Type')).toBe('application/json')
+      expect((options.headers as Headers).get('Accept')).toBe('application/x-ndjson')
 
       // Verify the body contains the correct type (id is dynamic UUID)
       const body = JSON.parse(options.body as string)
@@ -105,7 +142,7 @@ describe('HTTPChannel', () => {
         'fetch',
         vi.fn().mockResolvedValue({
           ok: true,
-          json: () => Promise.resolve(mockResponse),
+          body: createStreamingResponse([mockResponse]),
         }),
       )
 
@@ -148,11 +185,11 @@ describe('HTTPChannel', () => {
           .fn()
           .mockResolvedValueOnce({
             ok: true,
-            json: () => Promise.resolve(mockListResponse),
+            body: createStreamingResponse([mockListResponse]),
           })
           .mockResolvedValueOnce({
             ok: true,
-            json: () => Promise.resolve(mockExecuteResponse),
+            body: createStreamingResponse([mockExecuteResponse]),
           }),
       )
 
@@ -191,7 +228,7 @@ describe('HTTPChannel', () => {
       )
     })
 
-    it('should send HTTP POST on sendMessage() and emit response', async () => {
+    it('should send HTTP POST on sendMessage() with streaming and emit response', async () => {
       const mockListResponse = createListCommandsResponse([])
       const mockExecuteResponse = createExecuteCommandResponse('request-123', { id: 'user-456' })
 
@@ -201,11 +238,11 @@ describe('HTTPChannel', () => {
           .fn()
           .mockResolvedValueOnce({
             ok: true,
-            json: () => Promise.resolve(mockListResponse),
+            body: createStreamingResponse([mockListResponse]),
           })
           .mockResolvedValueOnce({
             ok: true,
-            json: () => Promise.resolve(mockExecuteResponse),
+            body: createStreamingResponse([mockExecuteResponse]),
           }),
       )
 
@@ -248,7 +285,7 @@ describe('HTTPChannel', () => {
           .fn()
           .mockResolvedValueOnce({
             ok: true,
-            json: () => Promise.resolve(mockListResponse),
+            body: createStreamingResponse([mockListResponse]),
           })
           .mockRejectedValueOnce(new Error('Network error')),
       )
@@ -286,7 +323,7 @@ describe('HTTPChannel', () => {
         'fetch',
         vi.fn().mockResolvedValue({
           ok: true,
-          json: () => Promise.resolve(mockListResponse),
+          body: createStreamingResponse([mockListResponse]),
         }),
       )
 
@@ -303,8 +340,8 @@ describe('HTTPChannel', () => {
     })
   })
 
-  describe('Server Mode', () => {
-    it('should trigger on("message") when handleMessage() is called', async () => {
+  describe('Server Mode (streaming)', () => {
+    it('should return a readable stream from handleRequest()', async () => {
       const channel = new HTTPChannel({
         id: 'test-channel',
       })
@@ -321,22 +358,27 @@ describe('HTTPChannel', () => {
         request: { name: 'John' },
       } as const
 
-      const responsePromise = channel.handleMessage(request)
+      const stream = channel.handleRequest(request)
 
+      // Should have received the message
       expect(messageHandler).toHaveBeenCalledWith(request)
 
+      // Stream should be defined
+      expect(stream).toBeInstanceOf(ReadableStream)
+
       // Simulate registry sending response
-      const id = crypto.randomUUID()
       channel.sendMessage({
-        id,
+        id: crypto.randomUUID(),
         type: MessageType.EXECUTE_COMMAND_RESPONSE,
         thid: 'request-123',
         response: { ok: true, result: { id: 'user-456' } },
       })
 
-      const response = await responsePromise
-      expect(response).toEqual({
-        id,
+      // Read the stream
+      const messages = await readStreamAsNDJSON(stream)
+
+      expect(messages).toHaveLength(1)
+      expect(messages[0]).toMatchObject({
         type: MessageType.EXECUTE_COMMAND_RESPONSE,
         thid: 'request-123',
         response: { ok: true, result: { id: 'user-456' } },
@@ -358,7 +400,7 @@ describe('HTTPChannel', () => {
         id: 'list-123',
       } as const
 
-      const responsePromise = channel.handleMessage(request)
+      const stream = channel.handleRequest(request)
 
       expect(messageHandler).toHaveBeenCalledWith(request)
 
@@ -370,8 +412,9 @@ describe('HTTPChannel', () => {
         commands: [{ id: 'user.create' }],
       })
 
-      const response = await responsePromise
-      expect(response).toEqual({
+      const messages = await readStreamAsNDJSON(stream)
+      expect(messages).toHaveLength(1)
+      expect(messages[0]).toEqual({
         id,
         type: MessageType.LIST_COMMANDS_RESPONSE,
         thid: 'list-123',
@@ -379,14 +422,14 @@ describe('HTTPChannel', () => {
       })
     })
 
-    it('should throw when handleMessage() is called in client mode', async () => {
+    it('should throw when handleRequest() is called in client mode', async () => {
       const mockListResponse = createListCommandsResponse([])
 
       vi.stubGlobal(
         'fetch',
         vi.fn().mockResolvedValue({
           ok: true,
-          json: () => Promise.resolve(mockListResponse),
+          body: createStreamingResponse([mockListResponse]),
         }),
       )
 
@@ -397,9 +440,9 @@ describe('HTTPChannel', () => {
 
       await channel.start()
 
-      await expect(
-        channel.handleMessage({ type: MessageType.LIST_COMMANDS_REQUEST, id: 'list-123' }),
-      ).rejects.toThrow('handleMessage() can only be used in server mode')
+      expect(() =>
+        channel.handleRequest({ type: MessageType.LIST_COMMANDS_REQUEST, id: 'list-123' }),
+      ).toThrow('handleRequest() can only be used in server mode')
     })
 
     it('should throw when closed', async () => {
@@ -410,13 +453,13 @@ describe('HTTPChannel', () => {
       await channel.start()
       await channel.close()
 
-      await expect(
-        channel.handleMessage({
+      expect(() =>
+        channel.handleRequest({
           type: MessageType.EXECUTE_COMMAND_REQUEST,
           id: 'request-123',
           commandId: 'user.create',
         }),
-      ).rejects.toThrow('Channel is closed')
+      ).toThrow('Channel is closed')
     })
 
     it('should throw InvalidMessageError for invalid message schema', async () => {
@@ -427,18 +470,18 @@ describe('HTTPChannel', () => {
       await channel.start()
 
       // Test null message
-      await expect(channel.handleMessage(null)).rejects.toThrow(InvalidMessageError)
+      expect(() => channel.handleRequest(null)).toThrow(InvalidMessageError)
 
       // Test non-object message
-      await expect(channel.handleMessage('not an object')).rejects.toThrow(InvalidMessageError)
+      expect(() => channel.handleRequest('not an object')).toThrow(InvalidMessageError)
 
       // Test message without id
-      await expect(
-        channel.handleMessage({ type: MessageType.EXECUTE_COMMAND_REQUEST }),
-      ).rejects.toThrow(InvalidMessageError)
+      expect(() =>
+        channel.handleRequest({ type: MessageType.EXECUTE_COMMAND_REQUEST }),
+      ).toThrow(InvalidMessageError)
 
       // Test message without type
-      await expect(channel.handleMessage({ id: 'test-123' })).rejects.toThrow(InvalidMessageError)
+      expect(() => channel.handleRequest({ id: 'test-123' })).toThrow(InvalidMessageError)
     })
 
     it('should throw error for forbidden message types', async () => {
@@ -452,37 +495,37 @@ describe('HTTPChannel', () => {
       await channel.start()
 
       // Forbidden message types should throw an error
-      await expect(
-        channel.handleMessage({
+      expect(() =>
+        channel.handleRequest({
           type: MessageType.REGISTER_COMMAND_REQUEST,
           id: 'register-123',
           command: { id: 'malicious.cmd' },
         }),
-      ).rejects.toThrow(`Message type ${MessageType.REGISTER_COMMAND_REQUEST} is not allowed`)
+      ).toThrow(`Message type ${MessageType.REGISTER_COMMAND_REQUEST} is not allowed`)
 
-      await expect(
-        channel.handleMessage({
+      expect(() =>
+        channel.handleRequest({
           type: MessageType.REGISTER_COMMAND_RESPONSE,
           id: 'register-123',
           thid: 'some-thid',
           response: { ok: true },
         }),
-      ).rejects.toThrow(`Message type ${MessageType.REGISTER_COMMAND_RESPONSE} is not allowed`)
+      ).toThrow(`Message type ${MessageType.REGISTER_COMMAND_RESPONSE} is not allowed`)
 
-      await expect(
-        channel.handleMessage({
+      expect(() =>
+        channel.handleRequest({
           type: MessageType.EVENT,
           id: 'event-123',
           eventId: 'user.updated',
           payload: { userId: '456' },
         }),
-      ).rejects.toThrow(`Message type ${MessageType.EVENT} is not allowed`)
+      ).toThrow(`Message type ${MessageType.EVENT} is not allowed`)
 
       // Message handler should not have been called for any forbidden messages
       expect(messageHandler).not.toHaveBeenCalled()
     })
 
-    it('should timeout pending requests to prevent memory leaks', async () => {
+    it('should timeout and write error to stream', async () => {
       const channel = new HTTPChannel({
         id: 'test-channel',
         timeout: 50, // Very short timeout for testing
@@ -496,10 +539,72 @@ describe('HTTPChannel', () => {
         commandId: 'user.create',
       } as const
 
+      const stream = channel.handleRequest(request)
+
       // Don't send a response - let it timeout
-      await expect(channel.handleMessage(request)).rejects.toThrow(
-        'Request request-123 timed out after 50ms',
-      )
+      await new Promise((resolve) => setTimeout(resolve, 100))
+
+      // Read the error response from stream
+      const messages = await readStreamAsNDJSON(stream)
+
+      expect(messages).toHaveLength(1)
+      expect(messages[0]).toMatchObject({
+        type: MessageType.EXECUTE_COMMAND_RESPONSE,
+        thid: 'request-123',
+        response: {
+          ok: false,
+          error: {
+            code: 'timeout',
+            message: 'Request request-123 timed out after 50ms',
+          },
+        },
+      })
+    })
+
+    it('should write NDJSON format (newline-delimited JSON)', async () => {
+      const channel = new HTTPChannel({
+        id: 'test-channel',
+      })
+
+      channel.on('message', vi.fn())
+      await channel.start()
+
+      const request = {
+        type: MessageType.EXECUTE_COMMAND_REQUEST,
+        id: 'request-123',
+        commandId: 'test.cmd',
+      } as const
+
+      const stream = channel.handleRequest(request)
+
+      // Simulate response
+      channel.sendMessage({
+        id: crypto.randomUUID(),
+        type: MessageType.EXECUTE_COMMAND_RESPONSE,
+        thid: 'request-123',
+        response: { ok: true, result: { data: 'test' } },
+      })
+
+      // Read all chunks
+      const reader = stream.getReader()
+      const chunks: string[] = []
+
+      while (true) {
+        const { value, done } = await reader.read()
+        if (done) break
+        chunks.push(new TextDecoder().decode(value))
+      }
+
+      // Each chunk should end with newline
+      const fullOutput = chunks.join('')
+      const lines = fullOutput.trim().split('\n')
+
+      expect(lines).toHaveLength(1)
+      expect(JSON.parse(lines[0])).toMatchObject({
+        type: MessageType.EXECUTE_COMMAND_RESPONSE,
+        thid: 'request-123',
+        response: { ok: true, result: { data: 'test' } },
+      })
     })
   })
 
@@ -511,7 +616,7 @@ describe('HTTPChannel', () => {
         'fetch',
         vi.fn().mockResolvedValue({
           ok: true,
-          json: () => Promise.resolve(mockListResponse),
+          body: createStreamingResponse([mockListResponse]),
         }),
       )
 
@@ -557,6 +662,7 @@ describe('HTTPChannel', () => {
       expect(headers.get('Authorization')).toBe('Bearer token123')
       expect(headers.get('X-Custom-Header')).toBe('custom-value')
       expect(headers.get('Content-Type')).toBe('application/json')
+      expect(headers.get('Accept')).toBe('application/x-ndjson')
     })
 
     it('should allow middleware to modify the response', async () => {
@@ -566,7 +672,7 @@ describe('HTTPChannel', () => {
         'fetch',
         vi.fn().mockResolvedValue({
           ok: true,
-          json: () => Promise.resolve(mockListResponse),
+          body: createStreamingResponse([mockListResponse]),
         }),
       )
 
@@ -624,7 +730,7 @@ describe('HTTPChannel', () => {
         'fetch',
         vi.fn().mockResolvedValue({
           ok: true,
-          json: () => Promise.resolve(mockListResponse),
+          body: createStreamingResponse([mockListResponse]),
         }),
       )
 
