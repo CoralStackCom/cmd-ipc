@@ -476,9 +476,9 @@ describe('HTTPChannel', () => {
       expect(() => channel.handleRequest('not an object')).toThrow(InvalidMessageError)
 
       // Test message without id
-      expect(() =>
-        channel.handleRequest({ type: MessageType.EXECUTE_COMMAND_REQUEST }),
-      ).toThrow(InvalidMessageError)
+      expect(() => channel.handleRequest({ type: MessageType.EXECUTE_COMMAND_REQUEST })).toThrow(
+        InvalidMessageError,
+      )
 
       // Test message without type
       expect(() => channel.handleRequest({ id: 'test-123' })).toThrow(InvalidMessageError)

@@ -90,8 +90,8 @@ git push origin main --tags
 ### Other Commands
 
 ```bash
-yarn typecheck            # TypeScript type checking
-yarn typecheck:examples   # TypeScript type checking for examples
+yarn typecheck            # TypeScript type checking only for main library
+yarn typecheck:all        # TypeScript type checking for all workspaces including examples
 yarn format               # Format and lint code
 yarn lint                 # ESLint only
 yarn prettify             # Prettier only

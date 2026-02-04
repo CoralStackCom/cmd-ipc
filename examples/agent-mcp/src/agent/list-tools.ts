@@ -24,15 +24,10 @@ export function listTools(): ToolSet {
         ? z.fromJSONSchema(command.schema.response as any)
         : z.unknown(),
       execute: async (input: any) => {
-        // eslint-disable-next-line no-console
-        console.log(`Executing command ${command.id} with input:`, input)
-        const result = await CommandRegistry.executeCommand(
+        return await CommandRegistry.executeCommand(
           command.id as CommandIDType<typeof CommandSchema>,
           input as any,
         )
-        // eslint-disable-next-line no-console
-        console.log(`Command ${command.id} returned result:`, result)
-        return result
       },
     }
   }

@@ -60,6 +60,11 @@ interface TokenUsage {
 export type UsageUpdateCallback = (usage: TokenUsage) => void
 
 /**
+ * Function that returns tools dynamically, allowing tools to be updated at runtime.
+ */
+export type ToolsGetter = () => ToolSet
+
+/**
  * Constructor options for `GeminiChatTransport`.
  */
 export type GeminiChatTransportOptions = {
@@ -75,9 +80,10 @@ export type GeminiChatTransportOptions = {
    */
   modelId?: GoogleGenerativeAIModelId
   /**
-   * An array of Tool definitions to enable tool calling.
+   * Function that returns tools dynamically. Called on each message send.
+   * This allows tools to be added/removed at runtime (e.g., when MCP servers connect).
    */
-  tools?: ToolSet
+  getTools: ToolsGetter
   /**
    * Callback for when token usage is updated after streaming completes.
    */
@@ -91,8 +97,7 @@ export class GeminiChatTransport<UI_MESSAGE extends UIMessage = UIMessage>
   implements ChatTransport<UI_MESSAGE>
 {
   // Readonly copy of options passed to the constructor
-  private readonly options: Required<Pick<GeminiChatTransportOptions, 'modelId' | 'apiKey'>> &
-    Omit<GeminiChatTransportOptions, 'modelId'>
+  private readonly options: Required<Pick<GeminiChatTransportOptions, 'modelId' | 'apiKey'>>
 
   // Google Generative AI provider instance
   private google: GoogleGenerativeAIProvider | null = null
@@ -107,6 +112,9 @@ export class GeminiChatTransport<UI_MESSAGE extends UIMessage = UIMessage>
   // Callback for usage updates
   private onUsageUpdate?: UsageUpdateCallback
 
+  // Dynamic tools getter - called on each message send to get current tools
+  private getToolsFn: ToolsGetter
+
   /**
    * Default constructor.
    *
@@ -117,11 +125,9 @@ export class GeminiChatTransport<UI_MESSAGE extends UIMessage = UIMessage>
     this.options = {
       apiKey: options.apiKey || import.meta.env.VITE_GOOGLE_AI_API_KEY || '',
       modelId: options.modelId ?? 'gemini-2.0-flash',
-      tools: options.tools,
     }
+    this.getToolsFn = options.getTools
     this.onUsageUpdate = options.onUsageUpdate
-    // eslint-disable-next-line no-console
-    console.log('GeminiChatTransport initialized with options:', this.options)
     if (this.options.apiKey) {
       this.google = createGoogleGenerativeAI({
         apiKey: this.options.apiKey,
@@ -137,8 +143,12 @@ export class GeminiChatTransport<UI_MESSAGE extends UIMessage = UIMessage>
     return this.options.modelId
   }
 
-  get tools(): ToolSet | undefined {
-    return this.options.tools
+  /**
+   * Get current tools by calling the dynamic getter function.
+   * This is called on each message send to get the latest available tools.
+   */
+  get tools(): ToolSet {
+    return this.getToolsFn()
   }
 
   get usage(): TokenUsage {
@@ -169,10 +179,12 @@ export class GeminiChatTransport<UI_MESSAGE extends UIMessage = UIMessage>
     if (!this.google) {
       throw new Error('Google Generative AI provider is not initialized.')
     }
+    // Get tools dynamically - this allows tools to be updated at runtime
+    const currentTools = this.tools
     const result = streamText({
       model: this.google(this.options.modelId),
       messages: await convertToModelMessages(messages),
-      tools: this.options.tools,
+      tools: currentTools,
       // Allow up to 5 steps for tool execution
       stopWhen: stepCountIs(5),
       abortSignal,

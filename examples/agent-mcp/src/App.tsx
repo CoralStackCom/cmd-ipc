@@ -1,106 +1,39 @@
-import { useChat } from '@ai-sdk/react'
-import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
-import ReactMarkdown from 'react-markdown'
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
-import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism'
-import remarkGfm from 'remark-gfm'
+import { useCallback, useState } from 'react'
 
-import { GeminiChatTransport } from './agent/gemini-chat-transport'
-import { listTools } from './agent/list-tools'
+import { ChatTab, type TokenUsage } from './components/ChatTab'
+import { MCPServersTab } from './components/MCPServersTab'
+import { ToolsSidebar } from './components/ToolsSidebar'
 
-interface ToolInfo {
-  name: string
-  description: string
-}
-
-// Memoized markdown components to prevent recreation on each render
-const markdownComponents = {
-  code({ className, children, ...props }: { className?: string; children?: React.ReactNode }) {
-    const match = /language-(\w+)/.exec(className || '')
-    const isInline = !match && !String(children).includes('\n')
-    return isInline ? (
-      <code className="inline-code" {...props}>
-        {children}
-      </code>
-    ) : (
-      <SyntaxHighlighter style={oneDark} language={match?.[1] || 'text'} PreTag="div">
-        {String(children).replace(/\n$/, '')}
-      </SyntaxHighlighter>
-    )
-  },
-}
-
-// Streaming message component with deferred updates for smoother rendering
-function StreamingMessage({ content, isStreaming }: { content: string; isStreaming: boolean }) {
-  const deferredContent = useDeferredValue(content)
-
-  return (
-    <>
-      {deferredContent ? (
-        <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
-          {deferredContent}
-        </ReactMarkdown>
-      ) : null}
-      {isStreaming && <span className="cursor" />}
-    </>
-  )
-}
+type TabType = 'chat' | 'mcp-servers'
 
 export default function App() {
   const [apiKey, setApiKey] = useState<string | undefined>(undefined)
-  const [usage, setUsage] = useState({ inputTokens: 0, outputTokens: 0, totalTokens: 0 })
-  const transport = useMemo(() => {
-    const tools = listTools()
-    return new GeminiChatTransport({
-      apiKey,
-      tools,
-      onUsageUpdate: (newUsage) => setUsage({ ...newUsage }),
-    })
-  }, [apiKey])
-  const [apiKeyInput, setApiKeyInput] = useState(transport.apiKey || '')
-  const availableTools: ToolInfo[] = useMemo(() => {
-    const tools = transport?.tools ?? {}
-    return Object.entries(tools).map(([name, tool]) => ({
-      name,
-      description: (tool as { description?: string })?.description ?? 'No description',
-    }))
-  }, [transport])
-  const { messages, sendMessage, setMessages, stop, error, status } = useChat({
-    transport,
+  const [apiKeyInput, setApiKeyInput] = useState(import.meta.env.VITE_GOOGLE_AI_API_KEY || '')
+  const [usage, setUsage] = useState<TokenUsage>({
+    inputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 0,
   })
+  const [activeTab, setActiveTab] = useState<TabType>('chat')
+  // Counter to trigger UI updates when tools change (for the tools list display)
+  const [toolsVersion, setToolsVersion] = useState(0)
 
-  const [input, setInput] = useState('')
-  const [showTools, setShowTools] = useState(false)
-  const messagesEndRef = useRef<HTMLDivElement>(null)
-  const inputRef = useRef<HTMLTextAreaElement>(null)
-  const isLoading = status === 'submitted' || status === 'streaming'
   const isConfigured = Boolean(apiKey)
 
-  // Auto-scroll to bottom when messages change
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages])
+  // Callback when MCP tools change - trigger re-render to update tools display
+  const handleToolsChanged = useCallback(() => {
+    setToolsVersion((v) => v + 1)
+  }, [])
 
-  // Focus input when configured or when loading completes
-  useEffect(() => {
-    if (isConfigured && !isLoading) {
-      inputRef.current?.focus()
-    }
-  }, [isConfigured, isLoading])
+  // Callback for usage updates from ChatTab
+  const handleUsageUpdate = useCallback((newUsage: TokenUsage) => {
+    setUsage({ ...newUsage })
+  }, [])
 
-  const handleSend = () => {
-    if (!input.trim()) return
-    sendMessage({ text: input.trim() })
-    setInput('')
-    inputRef.current?.focus()
-  }
-
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault()
-      handleSend()
-    }
-  }
+  // Clear chat handler
+  const handleClearChat = useCallback(() => {
+    // Chat is cleared inside ChatTab, this is just for any App-level cleanup if needed
+  }, [])
 
   // API Key Configuration Screen
   if (!isConfigured) {
@@ -154,8 +87,6 @@ export default function App() {
               </form>
             </div>
 
-            {error && <div className="error-message">{error.message}</div>}
-
             <p className="security-note">
               Your API key is stored only in browser memory and is never sent to any server other
               than Google&apos;s API.
@@ -180,7 +111,7 @@ export default function App() {
     )
   }
 
-  // Chat Interface
+  // Main Chat Interface
   return (
     <div className="app">
       <header>
@@ -189,8 +120,10 @@ export default function App() {
           <span className="model-badge">Gemini 2.0 Flash</span>
           <button
             onClick={() => {
-              stop()
-              setMessages([])
+              // Call the chat clear handler if available
+              const handler = (window as unknown as { __chatClearHandler?: () => void })
+                .__chatClearHandler
+              handler?.()
             }}
             className="clear-button"
           >
@@ -210,134 +143,46 @@ export default function App() {
         </div>
       </header>
 
-      <main className="chat-container">
-        <div className="messages">
-          {messages.length === 0 && (
-            <div className="welcome-message">
-              <h2>Welcome to Agent MCP</h2>
-              <p>
-                This is an AI chat interface powered by Google Gemini with MCP (Model Context
-                Protocol) tools for interacting with external systems.
-              </p>
-              <p>Start a conversation by typing a message below.</p>
+      {/* Main content area with sidebar */}
+      <div className="main-with-sidebar">
+        {/* Left panel: tabs + content */}
+        <div className="main-panel">
+          {/* Tab Navigation */}
+          <nav className="tab-navigation">
+            <button
+              className={`tab-button ${activeTab === 'chat' ? 'active' : ''}`}
+              onClick={() => setActiveTab('chat')}
+            >
+              Chat
+            </button>
+            <button
+              className={`tab-button ${activeTab === 'mcp-servers' ? 'active' : ''}`}
+              onClick={() => setActiveTab('mcp-servers')}
+            >
+              MCP Servers
+            </button>
+          </nav>
 
-              {availableTools.length > 0 && (
-                <div className="tools-panel">
-                  <button
-                    className="tools-toggle"
-                    onClick={() => setShowTools(!showTools)}
-                    type="button"
-                  >
-                    {showTools ? 'Hide' : 'Show'} Available Tools ({availableTools.length})
-                  </button>
-                  {showTools && (
-                    <div className="tools-list">
-                      {availableTools.map((tool) => (
-                        <div key={tool.name} className="tool-item">
-                          <div className="tool-item-name">{tool.name}</div>
-                          <div className="tool-item-description">{tool.description}</div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
+          {/* MCP Servers Tab */}
+          <div className={`mcp-container ${activeTab === 'mcp-servers' ? '' : 'hidden'}`}>
+            <MCPServersTab onToolsChanged={handleToolsChanged} />
+          </div>
+
+          {/* Chat Tab - always mounted to preserve history */}
+          {apiKey && (
+            <div className={`chat-tab-wrapper ${activeTab === 'chat' ? '' : 'hidden'}`}>
+              <ChatTab
+                apiKey={apiKey}
+                onUsageUpdate={handleUsageUpdate}
+                onClearChat={handleClearChat}
+              />
             </div>
           )}
-
-          {messages.map((message, messageIndex) => (
-            <div key={message.id}>
-              {message.parts.map((part, partIndex) => {
-                const isLastPart =
-                  messageIndex === messages.length - 1 && partIndex === message.parts.length - 1
-                const isStreamingPart =
-                  isLoading && isLastPart && part.type === 'text' && message.role === 'assistant'
-
-                switch (part.type) {
-                  case 'text':
-                    return (
-                      <div
-                        key={`${message.id}-part-${partIndex}`}
-                        className={`message ${message.role}`}
-                      >
-                        <div className="message-header">
-                          <span className="message-role">
-                            {message.role === 'user' ? 'You' : 'Assistant'}
-                          </span>
-                        </div>
-                        <div className="message-content markdown-body">
-                          <StreamingMessage content={part.text} isStreaming={isStreamingPart} />
-                        </div>
-                      </div>
-                    )
-                  default:
-                    // Handle tool parts (type starts with 'tool-')
-                    if (part.type.startsWith('tool-')) {
-                      const toolName = part.type.replace('tool-', '')
-                      const toolPart = part as {
-                        type: string
-                        toolCallId: string
-                        state: string
-                        input?: unknown
-                        output?: unknown
-                      }
-                      return (
-                        <div key={`${message.id}-part-${partIndex}`} className="message tool-call">
-                          <div className="message-header">
-                            <span className="message-role">Tool Call</span>
-                          </div>
-                          <div className="message-content tool-content">
-                            <div className="tool-name">{toolName}</div>
-                            <pre className="tool-args">
-                              {JSON.stringify(toolPart.input, null, 2)}
-                            </pre>
-                            {toolPart.state === 'output-available' &&
-                              toolPart.output !== undefined && (
-                                <>
-                                  <div className="tool-result-label">Result:</div>
-                                  <pre className="tool-result-data">
-                                    {JSON.stringify(toolPart.output, null, 2)}
-                                  </pre>
-                                </>
-                              )}
-                          </div>
-                        </div>
-                      )
-                    }
-                    return null
-                }
-              })}
-            </div>
-          ))}
-
-          {error && (
-            <div className="error-message">
-              <strong>Error:</strong> {error.message}
-            </div>
-          )}
-
-          <div ref={messagesEndRef} />
         </div>
 
-        <div className="input-container">
-          <textarea
-            ref={inputRef}
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder="Type your message... (Enter to send, Shift+Enter for new line)"
-            disabled={isLoading}
-            rows={3}
-          />
-          <button
-            onClick={handleSend}
-            disabled={isLoading || !input.trim()}
-            className="send-button"
-          >
-            {isLoading ? 'Sending...' : 'Send'}
-          </button>
-        </div>
-      </main>
+        {/* Right sidebar: always visible */}
+        <ToolsSidebar toolsVersion={toolsVersion} />
+      </div>
 
       <footer>
         <div className="token-usage">

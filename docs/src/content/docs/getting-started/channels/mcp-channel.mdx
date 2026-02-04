@@ -1,0 +1,506 @@
+---
+title: MCPChannel
+description: Using MCPChannel to expose commands as MCP tools for AI agents
+---
+
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+`MCPChannel` enables integration with the <a href="https://modelcontextprotocol.io/" target="_blank" rel="noopener">Model Context Protocol (MCP)</a>, allowing cmd-ipc commands to be exposed as tools for AI agents. It supports both client and server modes using the MCP Streamable HTTP transport.
+
+<Aside type="caution" title="Protocol Version">
+  MCPChannel uses the **MCP protocol version 2025-03-26** by default and is designed specifically for this version. Older protocol versions (e.g., 2024-11-05) are not supported and may result in compatibility issues. Ensure your MCP clients and servers are using a compatible protocol version.
+</Aside>
+
+Use cases include:
+
+- Exposing application commands as AI agent tools
+- Connecting to remote MCP servers
+- Building AI-powered applications with tool calling
+- Creating MCP-compatible APIs
+
+## Two Channel Types
+
+MCPChannel comes in two variants:
+
+| Channel | Use Case |
+|---------|----------|
+| **MCPServerChannel** | Expose cmd-ipc commands as MCP tools for AI agents to call |
+| **MCPClientChannel** | Connect to remote MCP servers and use their tools as commands |
+
+## MCPServerChannel
+
+`MCPServerChannel` exposes your cmd-ipc commands as MCP tools. AI agents can discover and call these tools via the MCP protocol.
+
+### Configuration
+
+```typescript
+import { MCPServerChannel } from '@coralstack/cmd-ipc'
+
+const channel = new MCPServerChannel({
+  id: 'mcp-server',
+  serverInfo: {
+    name: 'my-app',
+    version: '1.0.0',
+  },
+  capabilities: {
+    tools: {},
+  },
+  instructions: 'Optional instructions for the AI agent',
+  enableSessions: true,  // Enable session management (default: true)
+  timeout: 30000,        // Request timeout in ms (default: 30000)
+})
+
+await registry.registerChannel(channel)
+```
+
+### Configuration Options
+
+| Option | Type | Required | Default | Description |
+|--------|------|----------|---------|-------------|
+| `id` | `string` | Yes | - | Unique channel identifier |
+| `serverInfo` | `MCPInfo` | No | `{ name: 'cmd-ipc', version: '1.0.0' }` | Server name and version |
+| `capabilities` | `MCPServerCapabilities` | No | `{ tools: {} }` | Offered capabilities |
+| `protocolVersion` | `string` | No | `'2025-11-25'` | MCP protocol version |
+| `enableSessions` | `boolean` | No | `true` | Enable session management |
+| `instructions` | `string` | No | - | Instructions sent to clients |
+| `timeout` | `number` | No | `30000` | Request timeout in milliseconds |
+
+### Handling Requests
+
+Use `handleRequest()` in your HTTP handler to process incoming MCP requests. The method returns an `MCPHttpResponse` object containing status, headers, and body.
+
+<Tabs>
+  <TabItem label="Express">
+```typescript
+import express from 'express'
+import { Readable } from 'stream'
+
+const app = express()
+app.use(express.json())
+
+app.all('/mcp', async (req, res) => {
+  const method = req.method as 'GET' | 'POST' | 'DELETE'
+  const headers = new Headers()
+  for (const [key, value] of Object.entries(req.headers)) {
+    if (typeof value === 'string') headers.set(key, value)
+  }
+
+  const result = await channel.handleRequest(method, req.body, headers)
+
+  res.status(result.status)
+  for (const [key, value] of Object.entries(result.headers)) {
+    res.setHeader(key, value)
+  }
+
+  if (result.body instanceof ReadableStream) {
+    Readable.fromWeb(result.body).pipe(res)
+  } else if (result.body) {
+    res.send(result.body)
+  } else {
+    res.end()
+  }
+})
+
+app.listen(3000)
+```
+  </TabItem>
+  <TabItem label="Cloudflare Workers">
+```typescript
+export default {
+  async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url)
+
+    if (url.pathname === '/mcp') {
+      const method = request.method as 'GET' | 'POST' | 'DELETE'
+      const body = method === 'POST' ? await request.json() : undefined
+      const headers = request.headers
+
+      const result = await channel.handleRequest(method, body, headers)
+
+      return new Response(result.body, {
+        status: result.status,
+        headers: result.headers,
+      })
+    }
+
+    return new Response('Not Found', { status: 404 })
+  }
+}
+```
+  </TabItem>
+  <TabItem label="Node.js HTTP">
+```typescript
+import { createServer } from 'http'
+import { Readable } from 'stream'
+
+const server = createServer(async (req, res) => {
+  if (req.url === '/mcp') {
+    const method = req.method as 'GET' | 'POST' | 'DELETE'
+
+    // Parse body for POST requests
+    let body: unknown
+    if (method === 'POST') {
+      const chunks: Buffer[] = []
+      for await (const chunk of req) chunks.push(chunk)
+      body = JSON.parse(Buffer.concat(chunks).toString())
+    }
+
+    // Convert Node.js headers to Headers object
+    const headers = new Headers()
+    for (const [key, value] of Object.entries(req.headers)) {
+      if (typeof value === 'string') headers.set(key, value)
+    }
+
+    const result = await channel.handleRequest(method, body, headers)
+
+    res.statusCode = result.status
+    for (const [key, value] of Object.entries(result.headers)) {
+      res.setHeader(key, value)
+    }
+
+    if (result.body instanceof ReadableStream) {
+      Readable.fromWeb(result.body).pipe(res)
+    } else if (result.body) {
+      res.end(result.body)
+    } else {
+      res.end()
+    }
+    return
+  }
+
+  res.statusCode = 404
+  res.end('Not Found')
+})
+
+server.listen(3000)
+```
+  </TabItem>
+</Tabs>
+
+### Supported MCP Methods
+
+| HTTP Method | MCP Method | Description |
+|-------------|------------|-------------|
+| POST | `initialize` | Establish session and exchange capabilities |
+| POST | `notifications/initialized` | Client ready notification |
+| POST | `tools/list` | List available tools (commands) |
+| POST | `tools/call` | Execute a tool (command) |
+| GET | - | Open SSE stream for server-initiated messages |
+| DELETE | - | Terminate session |
+
+### Session Management
+
+When `enableSessions` is `true` (default), the server:
+
+1. Creates a new session on `initialize` request
+2. Returns session ID via `MCP-Session-Id` response header
+3. Expects session ID in subsequent request headers
+4. Cleans up session on DELETE request
+
+```typescript
+// Session ID is returned in the initialize response header
+const initResponse = await fetch('/mcp', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    jsonrpc: '2.0',
+    id: 1,
+    method: 'initialize',
+    params: { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'my-client', version: '1.0.0' } }
+  })
+})
+
+const sessionId = initResponse.headers.get('MCP-Session-Id')
+
+// Use session ID in subsequent requests
+const toolsResponse = await fetch('/mcp', {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+    'MCP-Session-Id': sessionId
+  },
+  body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list' })
+})
+```
+
+<Aside type="tip">
+  Set `enableSessions: false` for stateless deployments like Cloudflare Workers where session state is not preserved between requests.
+</Aside>
+
+### SSE Support
+
+The server supports Server-Sent Events (SSE) for responses when the client sends `Accept: text/event-stream` header. This enables streaming responses for long-running tool calls.
+
+## MCPClientChannel
+
+`MCPClientChannel` connects to remote MCP servers and exposes their tools as cmd-ipc commands.
+
+### Configuration
+
+```typescript
+import { MCPClientChannel } from '@coralstack/cmd-ipc'
+
+const channel = new MCPClientChannel({
+  id: 'mcp-client',
+  baseUrl: 'https://mcp.example.com',
+  endpoint: '/mcp',           // Optional: MCP endpoint path (default: '/mcp')
+  commandPrefix: 'remote',    // Optional: prefix for registered commands
+  timeout: 30000,             // Optional: request timeout in ms (default: 30000)
+  clientInfo: {
+    name: 'my-app',
+    version: '1.0.0',
+  },
+  capabilities: {},           // Optional: requested capabilities
+})
+
+await registry.registerChannel(channel)
+```
+
+### Configuration Options
+
+| Option | Type | Required | Default | Description |
+|--------|------|----------|---------|-------------|
+| `id` | `string` | Yes | - | Unique channel identifier |
+| `baseUrl` | `string` | Yes | - | MCP server URL (e.g., `https://mcp.example.com`) |
+| `endpoint` | `string` | No | `'/mcp'` | MCP endpoint path |
+| `commandPrefix` | `string` | No | - | Prefix added to registered command IDs |
+| `timeout` | `number` | No | `30000` | Request timeout in milliseconds |
+| `clientInfo` | `MCPInfo` | No | `{ name: 'cmd-ipc', version: '1.0.0' }` | Client name and version |
+| `capabilities` | `MCPClientCapabilities` | No | `{}` | Requested capabilities |
+| `protocolVersion` | `string` | No | `'2025-11-25'` | MCP protocol version |
+
+### Command Prefix
+
+The `commandPrefix` option helps organize commands from different sources:
+
+```typescript
+// Without prefix:
+// Remote tool 'calculator' -> local command 'calculator'
+
+// With prefix 'mcp':
+// Remote tool 'calculator' -> local command 'mcp.calculator'
+
+const channel = new MCPClientChannel({
+  id: 'mcp-client',
+  baseUrl: 'https://mcp.example.com',
+  commandPrefix: 'mcp',
+})
+
+// Execute with prefix
+await registry.executeCommand('mcp.calculator', { operation: 'add', a: 5, b: 3 })
+```
+
+### Startup Flow
+
+When `start()` is called on MCPClientChannel:
+
+1. Sends `initialize` request to establish session
+2. Captures session ID from `MCP-Session-Id` header
+3. Sends `notifications/initialized` notification
+4. Calls `tools/list` to discover available tools
+5. Emits `register.command.request` for each tool (with optional prefix)
+
+```typescript
+const channel = new MCPClientChannel({
+  id: 'mcp-client',
+  baseUrl: 'https://mcp.example.com',
+  commandPrefix: 'remote',
+})
+
+await registry.registerChannel(channel)
+
+// After start(), remote tools are available as commands
+const result = await registry.executeCommand('remote.some-tool', { input: 'value' })
+```
+
+### Accessing Server Information
+
+After initialization, you can access server information:
+
+```typescript
+const channel = new MCPClientChannel({ /* config */ })
+await registry.registerChannel(channel)
+
+console.log(channel.serverInfo)        // { name: 'server-name', version: '1.0.0' }
+console.log(channel.serverCapabilities) // { tools: { listChanged: true } }
+console.log(channel.sessionId)          // 'uuid-session-id'
+console.log(channel.protocolVersion)    // '2025-11-25'
+```
+
+## Complete Example
+
+Here's a complete example showing both server and client channels:
+
+### Server (Cloudflare Worker)
+
+```typescript
+import { CommandRegistry, MCPServerChannel, Command, registerCommands } from '@coralstack/cmd-ipc'
+
+// Define commands
+class MathCommands {
+  @Command('math.add', 'Add two numbers')
+  add({ a, b }: { a: number; b: number }): number {
+    return a + b
+  }
+
+  @Command('math.multiply', 'Multiply two numbers')
+  multiply({ a, b }: { a: number; b: number }): number {
+    return a * b
+  }
+}
+
+// Setup
+let registry: CommandRegistry | null = null
+let channel: MCPServerChannel | null = null
+
+async function getRegistry() {
+  if (!registry) {
+    registry = new CommandRegistry({ id: 'worker' })
+    registerCommands([new MathCommands()], registry)
+
+    channel = new MCPServerChannel({
+      id: 'mcp-server',
+      serverInfo: { name: 'math-server', version: '1.0.0' },
+      capabilities: { tools: {} },
+    })
+
+    await registry.registerChannel(channel)
+  }
+  return { registry, channel: channel! }
+}
+
+export default {
+  async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url)
+    const { channel } = await getRegistry()
+
+    if (url.pathname === '/mcp') {
+      const method = request.method as 'GET' | 'POST' | 'DELETE'
+      const body = method === 'POST' ? await request.json() : undefined
+
+      const result = await channel.handleRequest(method, body, request.headers)
+
+      return new Response(result.body, {
+        status: result.status,
+        headers: result.headers,
+      })
+    }
+
+    return new Response('Not Found', { status: 404 })
+  }
+}
+```
+
+### Client (Node.js)
+
+```typescript
+import { CommandRegistry, MCPClientChannel } from '@coralstack/cmd-ipc'
+
+const registry = new CommandRegistry({ id: 'client' })
+
+const channel = new MCPClientChannel({
+  id: 'mcp-client',
+  baseUrl: 'https://math-server.example.com',
+  commandPrefix: 'math',
+})
+
+await registry.registerChannel(channel)
+
+// Now you can execute remote MCP tools as commands
+const sum = await registry.executeCommand('math.math.add', { a: 5, b: 3 })
+console.log(sum) // 8
+
+const product = await registry.executeCommand('math.math.multiply', { a: 4, b: 7 })
+console.log(product) // 28
+```
+
+## JSON-RPC 2.0 Utilities
+
+MCPChannel exports utilities for working with JSON-RPC 2.0 messages:
+
+```typescript
+import {
+  createRequest,
+  createResponse,
+  createNotification,
+  createError,
+  createErrorResponse,
+  generateRequestId,
+  isRequest,
+  isResponse,
+  isNotification,
+  isErrorResponse,
+  isJSONRPCMessage,
+  validateJSONRPCMessage,
+  JSONRPC_ERRORS,
+} from '@coralstack/cmd-ipc'
+
+// Create a request
+const request = createRequest(1, 'tools/list')
+// { jsonrpc: '2.0', id: 1, method: 'tools/list' }
+
+// Create a response
+const response = createResponse(1, { tools: [] })
+// { jsonrpc: '2.0', id: 1, result: { tools: [] } }
+
+// Create an error response
+const error = createErrorResponse(1, createError(JSONRPC_ERRORS.METHOD_NOT_FOUND, 'Unknown method'))
+// { jsonrpc: '2.0', id: 1, error: { code: -32601, message: 'Unknown method' } }
+```
+
+## SSE Utilities
+
+For working with Server-Sent Events:
+
+```typescript
+import {
+  createSSEStream,
+  parseSSEStream,
+  prefersSSE,
+  SSE_CONTENT_TYPE,
+} from '@coralstack/cmd-ipc'
+
+// Check if client prefers SSE
+if (prefersSSE(request.headers.get('Accept'))) {
+  const { stream, writer } = createSSEStream()
+
+  // Write messages to the stream
+  writer.writeMessage({ jsonrpc: '2.0', id: 1, result: { data: 'value' } })
+  writer.close()
+
+  return new Response(stream, {
+    headers: { 'Content-Type': SSE_CONTENT_TYPE }
+  })
+}
+
+// Parse an SSE stream
+for await (const event of parseSSEStream(response.body)) {
+  console.log(event.data) // The event data
+}
+```
+
+## Common Issues
+
+### Session Not Found
+
+If you receive "Session not found" errors:
+
+1. Ensure you're passing the `MCP-Session-Id` header from the initialize response
+2. Check that sessions are enabled on the server (`enableSessions: true`)
+3. For stateless environments, consider disabling sessions
+
+### Tool Not Found
+
+If commands aren't being exposed as tools:
+
+1. Ensure commands are registered before the channel starts
+2. Private commands (prefixed with `_`) are automatically filtered out
+3. Check that the command has a valid ID and description
+
+### Connection Timeout
+
+If connections timeout:
+
+1. Increase the `timeout` configuration option
+2. Check network connectivity to the MCP server
+3. Verify the `baseUrl` and `endpoint` are correct

@@ -37,7 +37,7 @@
     "prettify": "yarn prettier . -w",
     "format": "yarn prettify && yarn lint",
     "typecheck": "tsc --noEmit",
-    "typecheck:examples": "yarn workspaces foreach -A run typecheck",
+    "typecheck:all": "yarn workspaces foreach -A run typecheck",
     "start:examples-electron": "yarn workspace @examples/electron-core build && yarn workspace @examples/electron-main start",
     "start:examples-web-workers": "yarn workspace @examples/web-workers dev",
     "start:examples-agent-mcp": "yarn workspace @examples/agent-mcp dev",

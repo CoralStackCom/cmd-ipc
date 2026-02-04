@@ -42,6 +42,7 @@ export const sidebar: SidebarSection[] = [
             slug: 'getting-started/channels/message-port-channel',
           },
           { label: 'HTTPChannel', slug: 'getting-started/channels/http-channel' },
+          { label: 'MCPChannel', slug: 'getting-started/channels/mcp-channel' },
         ],
       },
       { label: 'Type Safety', slug: 'getting-started/type-safety' },
