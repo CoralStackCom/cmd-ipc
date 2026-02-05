@@ -1,12 +1,17 @@
 # AI Agent MCP Example
 
-Expose cmd-ipc commands as AI agent tools via tool calling.
+Expose cmd-ipc commands as AI agent tools via tool calling, with support for connecting to external MCP servers with automatic OAuth authentication.
 
-**[📖 Full Documentation](https://coralstack.com/cmd-ipc/examples/mcp-agent/)**
+**[Full Documentation](https://coralstack.com/cmd-ipc/examples/mcp-agent/)**
 
 ## Overview
 
-This example demonstrates how to convert cmd-ipc commands into tools for AI agents. It uses the Vercel AI SDK to integrate with Google Gemini, showing how commands can be easily converted to tools for any AI agent framework.
+This example demonstrates how to:
+
+- Convert cmd-ipc commands into tools for AI agents
+- Connect to external MCP servers to expand available tools
+- Handle OAuth authentication for protected MCP servers
+- Use the Vercel AI SDK to integrate with Google Gemini
 
 ## Running the Example
 
@@ -48,12 +53,23 @@ cp .env.example .env
 ```
 examples/agent-mcp/
 ├── src/
-│   ├── App.tsx               # Chat interface
-│   ├── agent/
-│   │   ├── useGeminiChat.ts  # Chat hook with AI SDK
-│   │   └── list-tools.ts     # Converts commands to AI SDK tools
-│   └── commands/
-│       ├── command-registry.ts
-│       ├── command-schema.ts
-│       └── command-handlers.ts
+│   ├── App.tsx                # Main app with tabs (Chat, MCP Servers)
+│   ├── agent/                 # AI agent integration
+│   │   ├── gemini-chat-transport.ts
+│   │   └── list-tools.ts
+│   ├── commands/              # Local command definitions
+│   │   ├── command-registry.ts
+│   │   ├── command-schema.ts
+│   │   └── calc-service.ts
+│   ├── components/            # React components
+│   │   ├── ChatTab.tsx
+│   │   ├── MCPServersTab.tsx
+│   │   └── ToolsSidebar.tsx
+│   ├── mcp/                   # MCP server management
+│   │   └── mcp-server-manager.ts
+│   ├── middleware/            # Vite dev server middleware
+│   │   ├── mcp-proxy.ts       # CORS proxy for external MCP servers
+│   │   └── spa-fallback.ts    # SPA routing for OAuth callbacks
+│   └── utils/
+│       └── oauth-popup.ts     # OAuth popup and token storage
 ```

@@ -83,6 +83,13 @@ interface IRemoteCommandDefinition extends ICommandDefinitionBase {
 export type ICommandDefinition = ILocalCommandDefinition | IRemoteCommandDefinition
 
 /**
+ * List Command Definition Type: Used when listing commands from the registry
+ */
+export type IListCommandDefinition =
+  | Omit<ILocalCommandDefinition, 'handler'>
+  | IRemoteCommandDefinition
+
+/**
  * Unique ID for Channel
  */
 export type ChannelID = string
@@ -265,7 +272,7 @@ export interface ICommandRegistry<
    *
    * @returns   An array of ICommandDefinition for all registered commands
    */
-  listCommands(): readonly Omit<ICommandDefinition, 'handler'>[]
+  listCommands(): readonly IListCommandDefinition[]
   /**
    * Execute a command with optional payload P and return a Promise of type R
    *

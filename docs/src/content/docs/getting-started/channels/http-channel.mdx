@@ -1,16 +1,24 @@
 ---
 title: HTTPChannel
-description: Using HTTPChannel for HTTP-based command communication
+description: Using HTTPChannel for HTTP-based command communication with NDJSON streaming
 ---
 
 import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
-`HTTPChannel` enables command communication over HTTP using the [Protocol](/cmd-ipc/introduction/protocol/) message format. It supports both client and server modes, making it ideal for:
+`HTTPChannel` enables command communication over HTTP using the [Protocol](/cmd-ipc/introduction/protocol/) message format with **NDJSON (Newline-Delimited JSON) streaming**. It supports both client and server modes, making it ideal for:
 
 - REST API backends
 - Cloudflare Workers
 - Edge functions
 - Microservices communication
+
+## NDJSON Streaming
+
+All communication uses NDJSON streaming format. Each message is a JSON object followed by a newline character (`\n`). This enables efficient streaming responses and better memory usage for large payloads.
+
+```
+{"type":"execute.command.response","thid":"abc-123","response":{"ok":true,"result":"Hello"}}\n
+```
 
 ## Two Modes
 
@@ -23,7 +31,7 @@ HTTPChannel operates in two distinct modes:
 
 ## Client Mode
 
-Client mode sends HTTP POST requests to a remote server.
+Client mode sends HTTP POST requests with `Accept: application/x-ndjson` header and reads streaming NDJSON responses.
 
 ### Configuration
 
@@ -71,6 +79,95 @@ await registry.executeCommand('api.user.create', { name: 'John' })
 // Sends to server as 'user.create' (prefix stripped)
 ```
 
+### Middleware
+
+HTTPChannel supports middleware for modifying requests before they're sent. Use the `use()` method to add middleware functions that execute in the order they're added.
+
+```typescript
+import { HTTPChannel } from '@coralstack/cmd-ipc'
+
+const channel = new HTTPChannel({
+  id: 'api',
+  baseUrl: 'https://api.example.com',
+})
+
+// Add middleware using use()
+channel.use(async (ctx, next) => {
+  // Modify request before sending
+  ctx.headers.set('Authorization', `Bearer ${getToken()}`)
+
+  // Call next() to continue the chain
+  const result = await next()
+
+  // Optionally modify the response
+  return result
+})
+```
+
+#### Middleware Context
+
+Each middleware receives a context object with:
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `url` | `string` | The request URL |
+| `headers` | `Headers` | HTTP headers (modifiable) |
+| `message` | `CommandMessage` | The request message |
+| `abortController` | `AbortController` | Controller to abort the request |
+
+#### Authentication Middleware
+
+```typescript
+channel.use(async (ctx, next) => {
+  const token = await getAuthToken()
+  ctx.headers.set('Authorization', `Bearer ${token}`)
+  return next()
+})
+```
+
+#### Logging Middleware
+
+```typescript
+channel.use(async (ctx, next) => {
+  console.log('Request:', ctx.url, ctx.message)
+  const result = await next()
+  console.log('Response:', result)
+  return result
+})
+```
+
+#### Retry Middleware
+
+```typescript
+channel.use(async (ctx, next) => {
+  for (let i = 0; i < 3; i++) {
+    try {
+      return await next()
+    } catch (err) {
+      if (i === 2) throw err
+      await new Promise(r => setTimeout(r, 1000 * (i + 1)))
+    }
+  }
+})
+```
+
+#### Chaining Middleware
+
+Middleware can be chained using fluent syntax:
+
+```typescript
+channel
+  .use(authMiddleware)
+  .use(loggingMiddleware)
+  .use(retryMiddleware)
+
+await registry.registerChannel(channel)
+```
+
+<Aside>
+  Middleware is only used in client mode. In server mode, use your HTTP framework's middleware (Express, Hono, etc.) instead.
+</Aside>
+
 ## Server Mode
 
 Server mode receives HTTP requests and processes them via the registry.
@@ -90,26 +187,42 @@ await registry.registerChannel(channel)
 
 ### Handling Requests
 
-Use `handleMessage()` to process incoming HTTP requests:
+Use `handleRequest()` to process incoming HTTP requests. The method validates the message schema and processes allowed message types (`list.commands.request`, `list.commands.response`, `execute.command.request`, `execute.command.response`).
+
+`handleRequest()` returns a `ReadableStream` that can be used directly as the HTTP response body. The stream uses NDJSON format.
 
 <Tabs>
   <TabItem label="Express">
 ```typescript
 import express from 'express'
+import { Readable } from 'stream'
+import { InvalidMessageError, publishSchemaDoc } from '@coralstack/cmd-ipc'
 
 const app = express()
 app.use(express.json())
 
-app.post('/cmd', async (req, res) => {
-  const response = await channel.handleMessage(req.body)
-  res.json(response)
+app.post('/cmd', (req, res) => {
+  try {
+    const stream = channel.handleRequest(req.body)
+
+    res.setHeader('Content-Type', 'application/x-ndjson')
+    res.setHeader('Transfer-Encoding', 'chunked')
+
+    // Convert Web ReadableStream to Node.js stream
+    Readable.fromWeb(stream).pipe(res)
+  } catch (err) {
+    if (err instanceof InvalidMessageError) {
+      return res.status(400).json({ error: 'Invalid message format', issues: err.issues })
+    }
+    if (err instanceof Error && err.message.includes('is not allowed')) {
+      return res.status(403).json({ error: err.message })
+    }
+    throw err
+  }
 })
 
 app.get('/cmds.json', (req, res) => {
-  res.json({
-    status: 'ok',
-    commands: registry.listCommands()
-  })
+  res.json(publishSchemaDoc(registry.listCommands()))
 })
 
 app.listen(3000)
@@ -117,23 +230,42 @@ app.listen(3000)
   </TabItem>
   <TabItem label="Cloudflare Workers">
 ```typescript
+import { InvalidMessageError, publishSchemaDoc } from '@coralstack/cmd-ipc'
+
 export default {
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url)
 
     if (request.method === 'POST' && url.pathname === '/cmd') {
-      const body = await request.json()
-      const response = await channel.handleMessage(body)
-      return new Response(JSON.stringify(response), {
-        headers: { 'Content-Type': 'application/json' }
-      })
+      try {
+        const body = await request.json()
+        const stream = channel.handleRequest(body)
+
+        return new Response(stream, {
+          headers: {
+            'Content-Type': 'application/x-ndjson',
+            'Transfer-Encoding': 'chunked'
+          }
+        })
+      } catch (err) {
+        if (err instanceof InvalidMessageError) {
+          return new Response(JSON.stringify({ error: 'Invalid message format' }), {
+            status: 400,
+            headers: { 'Content-Type': 'application/json' }
+          })
+        }
+        if (err instanceof Error && err.message.includes('is not allowed')) {
+          return new Response(JSON.stringify({ error: err.message }), {
+            status: 403,
+            headers: { 'Content-Type': 'application/json' }
+          })
+        }
+        throw err
+      }
     }
 
     if (request.method === 'GET' && url.pathname === '/cmds.json') {
-      return new Response(JSON.stringify({
-        status: 'ok',
-        commands: registry.listCommands()
-      }), {
+      return new Response(JSON.stringify(publishSchemaDoc(registry.listCommands())), {
         headers: { 'Content-Type': 'application/json' }
       })
     }
@@ -146,6 +278,8 @@ export default {
   <TabItem label="Node.js HTTP">
 ```typescript
 import { createServer } from 'http'
+import { Readable } from 'stream'
+import { InvalidMessageError, publishSchemaDoc } from '@coralstack/cmd-ipc'
 
 const server = createServer(async (req, res) => {
   if (req.method === 'POST' && req.url === '/cmd') {
@@ -153,19 +287,35 @@ const server = createServer(async (req, res) => {
     for await (const chunk of req) chunks.push(chunk)
     const body = JSON.parse(Buffer.concat(chunks).toString())
 
-    const response = await channel.handleMessage(body)
+    try {
+      const stream = channel.handleRequest(body)
 
-    res.writeHead(200, { 'Content-Type': 'application/json' })
-    res.end(JSON.stringify(response))
+      res.writeHead(200, {
+        'Content-Type': 'application/x-ndjson',
+        'Transfer-Encoding': 'chunked'
+      })
+
+      // Convert Web ReadableStream to Node.js stream
+      Readable.fromWeb(stream).pipe(res)
+    } catch (err) {
+      if (err instanceof InvalidMessageError) {
+        res.writeHead(400, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'Invalid message format' }))
+        return
+      }
+      if (err instanceof Error && err.message.includes('is not allowed')) {
+        res.writeHead(403, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: err.message }))
+        return
+      }
+      throw err
+    }
     return
   }
 
   if (req.method === 'GET' && req.url === '/cmds.json') {
     res.writeHead(200, { 'Content-Type': 'application/json' })
-    res.end(JSON.stringify({
-      status: 'ok',
-      commands: registry.listCommands()
-    }))
+    res.end(JSON.stringify(publishSchemaDoc(registry.listCommands())))
     return
   }
 
@@ -178,7 +328,23 @@ server.listen(3000)
   </TabItem>
 </Tabs>
 
-## CORS Configuration
+### Error Handling
+
+`handleRequest()` has specific error behaviors:
+
+| Condition | Behavior |
+|-----------|----------|
+| Invalid message schema | Throws `InvalidMessageError` with validation issues |
+| Forbidden message type | Throws `Error: Message type ${message.type} is not allowed` |
+| Channel closed | Throws `Error: Channel is closed` |
+| Client mode | Throws `Error: handleRequest() can only be used in server mode` |
+| Request timeout | Writes timeout error to stream and closes it |
+
+<Aside type="note">
+  Unlike the previous `handleMessage()` method which returned a Promise, `handleRequest()` returns a `ReadableStream` synchronously. Timeouts are now written to the stream as error responses rather than thrown as exceptions.
+</Aside>
+
+### CORS Configuration
 
 For browser clients, configure CORS headers:
 
@@ -194,26 +360,29 @@ if (request.method === 'OPTIONS') {
   return new Response(null, { headers: corsHeaders })
 }
 
-// Add to all responses
-return new Response(JSON.stringify(response), {
+// Add to streaming responses
+const stream = channel.handleRequest(body)
+return new Response(stream, {
   headers: {
-    'Content-Type': 'application/json',
+    'Content-Type': 'application/x-ndjson',
     ...corsHeaders
   }
 })
 ```
 
-## Endpoints
+### Endpoints
 
-HTTPChannel expects two endpoints on the server:
+To support HTTPChannel and the CLI to generate local schemas for clients, your server should support two endpoints:
 
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
 | `/cmd` | POST | Execute commands (authenticated) |
 | `/cmds.json` | GET | Schema discovery for CLI (usually unauthenticated) |
 
+Use the `publishSchemaDoc()` helper function to generate the correct schema document format for `/cmds.json`. It automatically filters out private commands and formats the response for the CLI.
+
 <Aside>
-  The `/cmds.json` endpoint is typically left unauthenticated to allow the CLI to generate TypeScript schemas from remote services. Private commands (prefixed with `_`) are automatically excluded from this endpoint.
+  The `/cmds.json` endpoint is typically left unauthenticated to allow the CLI to generate TypeScript schemas from remote services. Private commands (prefixed with `_`) are automatically excluded by `publishSchemaDoc()`.
 </Aside>
 
 ## Common Issues

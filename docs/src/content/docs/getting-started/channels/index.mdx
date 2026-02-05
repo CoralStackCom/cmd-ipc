@@ -18,7 +18,7 @@ A channel is a bidirectional communication pipe that:
 
 ## Built-in Channels
 
-cmd-ipc includes two built-in channel implementations:
+cmd-ipc includes three built-in channel implementations:
 
 <CardGrid>
   <LinkCard
@@ -28,8 +28,13 @@ cmd-ipc includes two built-in channel implementations:
   />
   <LinkCard
     title="HTTPChannel"
-    description="For HTTP-based communication with REST APIs and edge functions."
+    description="For HTTP-based communication with REST APIs and edge functions using NDJSON streaming."
     href="/cmd-ipc/getting-started/channels/http-channel/"
+  />
+  <LinkCard
+    title="MCPChannel"
+    description="For Model Context Protocol (MCP) integration, exposing commands as AI agent tools."
+    href="/cmd-ipc/getting-started/channels/mcp-channel/"
   />
 </CardGrid>
 

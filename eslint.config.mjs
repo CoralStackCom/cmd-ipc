@@ -76,7 +76,13 @@ export default [
           'ts-ignore': 'allow-with-description',
         },
       ],
-      'spaced-comment': ['error', 'always'],
+      'spaced-comment': [
+        'error',
+        'always',
+        {
+          markers: ['/'],
+        },
+      ],
       'no-useless-rename': 'error',
       'no-lonely-if': 'warn',
       'no-alert': 'error',

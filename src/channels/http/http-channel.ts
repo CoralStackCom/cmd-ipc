@@ -4,139 +4,56 @@ import type {
   IMessageListCommandsRequest,
   IMessageListCommandsResponse,
   IMessageRegisterCommandRequest,
-} from '../../registry/command-messages-types'
-import { MessageType } from '../../registry/command-messages-types'
+} from '../../registry/command-message-schemas'
+import { MessageType, validateMessage } from '../../registry/command-message-schemas'
 import type {
   ChannelCloseListener,
   ChannelEventListeners,
   ChannelMessageListener,
   ICommandChannel,
 } from '../command-channel-interface'
+import type {
+  HTTPChannelConfig,
+  HTTPChannelMode,
+  HTTPMiddleware,
+  HTTPMiddlewareContext,
+} from './http-channel-interface'
 
 /**
- * Configuration options for HTTPChannel
+ * Default timeout for HTTP requests (in milliseconds)
  */
-export interface HTTPChannelConfig {
-  /**
-   * Unique identifier for this channel
-   */
-  id: string
-
-  /**
-   * Base URL for client mode (e.g., 'https://api.example.com')
-   * If not provided, channel operates in server mode
-   */
-  baseUrl?: string
-
-  /**
-   * Prefix to add to remote command IDs when registering
-   * e.g., prefix: 'cloud' registers 'user.create' as 'cloud.user.create'
-   */
-  commandPrefix?: string
-
-  /**
-   * Request timeout in milliseconds
-   * @default 30000
-   */
-  timeout?: number
-}
+const DEFAULT_TIMEOUT = 30000 // 30 seconds
+/**
+ * Message types that are allowed to be sent by the client
+ * or processed by the server. Other message types are blocked
+ * to prevent unauthorized command registrations or events.
+ */
+const ALLOWED_MESSAGE_TYPES = new Set<string>([
+  MessageType.LIST_COMMANDS_REQUEST,
+  MessageType.LIST_COMMANDS_RESPONSE,
+  MessageType.EXECUTE_COMMAND_REQUEST,
+  MessageType.EXECUTE_COMMAND_RESPONSE,
+])
 
 /**
- * HTTPChannel: Implements ICommandChannel using HTTP for communication.
+ * HTTPChannel: Implements ICommandChannel using HTTP streaming for communication.
+ *
+ * All communication uses newline-delimited JSON (NDJSON) streaming format.
  *
  * Supports two modes:
- * - **Client mode** (with baseUrl): Sends HTTP POST requests to a remote server.
+ * - **Client mode** (with baseUrl): Sends HTTP POST requests to a remote server
+ *   with `Accept: application/x-ndjson` header. Reads streaming NDJSON responses.
  *   `start()` fetches the remote command list and emits `register.command.request`
  *   for each command. `sendMessage()` sends POST requests and emits responses.
  *
  * - **Server mode** (without baseUrl): Receives HTTP requests from clients.
- *   `handleMessage()` triggers on('message') and waits for sendMessage() to resolve.
+ *   `handleRequest()` returns a ReadableStream for the HTTP response body.
  *   Used with any HTTP framework (Express, Cloudflare Workers, etc.)
  *
- * @example
- * // Client mode - Connect to a remote server
- * import { CommandRegistry, HTTPChannel } from 'cmd-ipc'
+ * Middleware can be added in client mode to modify requests (e.g., add auth headers).
+ * In server mode, only responses to requests with `thid` are valid.
  *
- * const registry = new CommandRegistry()
- * const channel = new HTTPChannel({
- *   id: 'cloud-api',
- *   baseUrl: 'https://api.example.com',
- *   commandPrefix: 'cloud',  // Remote 'user.create' becomes 'cloud.user.create'
- *   timeout: 30000,
- * })
- *
- * await registry.registerChannel(channel)
- *
- * // Execute remote commands (automatically prefixed)
- * const user = await registry.execute('cloud.user.create', { name: 'John' })
- *
- * @example
- * // Server mode - Express.js
- * import express from 'express'
- * import { CommandRegistry, HTTPChannel } from 'cmd-ipc'
- *
- * const app = express()
- * const registry = new CommandRegistry()
- * const channel = new HTTPChannel({ id: 'http-server' })
- *
- * registry.register({ id: 'user.create', handler: (args) => ({ id: 1, ...args }) })
- * await registry.registerChannel(channel)
- *
- * app.post('/cmd', express.json(), async (req, res) => {
- *   const response = await channel.handleMessage(req.body)
- *   res.json(response)
- * })
- *
- * app.listen(3000)
- *
- * @example
- * // Server mode - Cloudflare Workers
- * import { CommandRegistry, HTTPChannel } from 'cmd-ipc'
- *
- * const registry = new CommandRegistry()
- * const channel = new HTTPChannel({ id: 'cf-worker' })
- *
- * registry.register({ id: 'hello', handler: (args) => `Hello, ${args.name}!` })
- * await registry.registerChannel(channel)
- *
- * export default {
- *   async fetch(request: Request): Promise<Response> {
- *     if (request.method === 'POST' && new URL(request.url).pathname === '/cmd') {
- *       const body = await request.json()
- *       const response = await channel.handleMessage(body)
- *       return new Response(JSON.stringify(response), {
- *         headers: { 'Content-Type': 'application/json' },
- *       })
- *     }
- *     return new Response('Not Found', { status: 404 })
- *   },
- * }
- *
- * @example
- * // Server mode - Node.js HTTP
- * import { createServer } from 'node:http'
- * import { CommandRegistry, HTTPChannel } from 'cmd-ipc'
- *
- * const registry = new CommandRegistry()
- * const channel = new HTTPChannel({ id: 'node-server' })
- *
- * registry.register({ id: 'ping', handler: () => 'pong' })
- * await registry.registerChannel(channel)
- *
- * createServer(async (req, res) => {
- *   if (req.method === 'POST' && req.url === '/cmd') {
- *     const chunks: Buffer[] = []
- *     for await (const chunk of req) chunks.push(chunk)
- *     const body = JSON.parse(Buffer.concat(chunks).toString())
- *
- *     const response = await channel.handleMessage(body)
- *
- *     res.writeHead(200, { 'Content-Type': 'application/json' })
- *     res.end(JSON.stringify(response))
- *   } else {
- *     res.writeHead(404).end()
- *   }
- * }).listen(3000)
+ * {@link https://coralstack.com/cmd-ipc/getting-started/channels/http-channel}
  */
 export class HTTPChannel implements ICommandChannel {
   /**
@@ -150,60 +67,27 @@ export class HTTPChannel implements ICommandChannel {
   private readonly _messageListeners = new Set<ChannelMessageListener>()
   private readonly _closeListeners = new Set<ChannelCloseListener>()
   private readonly _pendingRequests = new Map<string, (response: unknown) => void>()
+  private readonly _middleware: HTTPMiddleware[] = []
   private _started = false
   private _closed = false
 
-  constructor(config: HTTPChannelConfig) {
+  /**
+   * Constructor for HTTPChannel
+   *
+   * @param config - Configuration options for the channel
+   */
+  public constructor(config: HTTPChannelConfig) {
     this.id = config.id
     this._baseUrl = config.baseUrl
     this._commandPrefix = config.commandPrefix
-    this._timeout = config.timeout ?? 30000
-  }
-
-  private _isClientMode(): boolean {
-    return !!this._baseUrl
-  }
-
-  private _emitMessage(message: unknown): void {
-    for (const listener of this._messageListeners) {
-      listener(message)
-    }
-  }
-
-  private async _post(body: unknown): Promise<unknown> {
-    if (!this._baseUrl) {
-      throw new Error('Cannot send HTTP request in server mode')
-    }
-
-    const controller = new AbortController()
-    const timeoutId = setTimeout(() => controller.abort(), this._timeout)
-
-    try {
-      const response = await fetch(`${this._baseUrl}/cmd`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-        signal: controller.signal,
-      })
-
-      clearTimeout(timeoutId)
-
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`)
-      }
-
-      return await response.json()
-    } catch (error) {
-      clearTimeout(timeoutId)
-      throw error
-    }
+    this._timeout = config.timeout ?? DEFAULT_TIMEOUT
   }
 
   /**
    * Start the channel.
    *
-   * - Client mode: Fetches commands from remote server, applies prefix,
-   *   emits register.command.request for each command
+   * - Client mode: Fetches commands from remote server using streaming,
+   *   applies prefix, emits register.command.request for each command
    * - Server mode: Resolves immediately
    */
   public async start(): Promise<void> {
@@ -211,9 +95,9 @@ export class HTTPChannel implements ICommandChannel {
       return
     }
 
-    if (this._isClientMode()) {
-      // Fetch commands from remote server
-      const response = (await this._post({
+    if (this.mode === 'CLIENT') {
+      // Fetch commands from remote server using streaming
+      const response = (await this._postStreaming({
         id: crypto.randomUUID(),
         type: MessageType.LIST_COMMANDS_REQUEST,
       } satisfies IMessageListCommandsRequest)) as IMessageListCommandsResponse
@@ -259,7 +143,7 @@ export class HTTPChannel implements ICommandChannel {
   /**
    * Send a message to the channel.
    *
-   * - Client mode: Sends HTTP POST to /cmd, response triggers on('message').
+   * - Client mode: Sends HTTP POST to /cmd with streaming, response triggers on('message').
    *   If commandPrefix is configured, strips prefix from commandId before sending.
    * - Server mode: Resolves pending HTTP request with this message
    */
@@ -268,17 +152,13 @@ export class HTTPChannel implements ICommandChannel {
       return
     }
 
-    if (this._isClientMode()) {
-      // Do not send register command requests or events from client
-      if (
-        message.type === MessageType.REGISTER_COMMAND_REQUEST ||
-        message.type === MessageType.REGISTER_COMMAND_RESPONSE ||
-        message.type === MessageType.EVENT
-      ) {
+    if (this.mode === 'CLIENT') {
+      // Check message type is allowed
+      if (message.type && !ALLOWED_MESSAGE_TYPES.has(message.type)) {
         return
       }
 
-      // Client mode: send POST, emit response
+      // Client mode: send POST with streaming, emit response
       let outgoingMessage = message
 
       // Strip prefix from commandId before sending to remote server
@@ -291,7 +171,7 @@ export class HTTPChannel implements ICommandChannel {
         }
       }
 
-      this._post(outgoingMessage)
+      this._postStreaming(outgoingMessage)
         .then((response) => this._emitMessage(response))
         .catch(() => {
           // Silently ignore errors - registry will handle via timeout
@@ -303,9 +183,6 @@ export class HTTPChannel implements ICommandChannel {
         this._pendingRequests.delete(message.thid)
         resolver(message)
       }
-    } else {
-      // In server mode, only responses to requests with thid are valid
-      return
     }
   }
 
@@ -325,27 +202,243 @@ export class HTTPChannel implements ICommandChannel {
   /**
    * Server mode only: Handle an incoming HTTP request.
    *
-   * Triggers on('message') with the request body, waits for sendMessage() to be
-   * called with the response, then returns that response.
+   * Returns a ReadableStream that can be used as the HTTP response body.
+   * Uses newline-delimited JSON (NDJSON) format - each chunk is a JSON object
+   * followed by a newline character.
    *
-   * @param body - The HTTP request body
-   * @returns Promise that resolves with the response to send back
+   * @param message - The HTTP request body (parsed JSON)
+   * @returns ReadableStream to use as the HTTP response body
+   * @throws Error if called in client mode or if channel is closed or if message is invalid
+   *
+   * @example
+   * ```typescript
+   * // In your HTTP handler (e.g., Cloudflare Worker)
+   * const stream = channel.handleRequest(body)
+   *
+   * return new Response(stream, {
+   *   headers: {
+   *     'Content-Type': 'application/x-ndjson',
+   *     'Transfer-Encoding': 'chunked'
+   *   }
+   * })
+   * ```
    */
-  public async handleMessage(body: unknown): Promise<unknown> {
-    if (this._isClientMode()) {
-      throw new Error('handleMessage() can only be used in server mode')
+  public handleRequest(message: unknown): ReadableStream<Uint8Array> {
+    if (this.mode === 'CLIENT') {
+      throw new Error('handleRequest() can only be used in server mode')
     }
 
     if (this._closed) {
       throw new Error('Channel is closed')
     }
 
-    const request = body as { id?: string }
-    const requestId = request.id ?? crypto.randomUUID()
+    // Validate message schema
+    validateMessage(message)
+    const cmdMessage = message as CommandMessage
 
-    return new Promise<unknown>((resolve) => {
-      this._pendingRequests.set(requestId, resolve)
-      this._emitMessage(body)
+    // Check message type is allowed
+    if (!ALLOWED_MESSAGE_TYPES.has(cmdMessage.type)) {
+      throw new Error(`Message type ${cmdMessage.type} is not allowed`)
+    }
+
+    // Create a ReadableStream for streaming responses
+    let streamController: ReadableStreamDefaultController<Uint8Array> | null = null
+    let isClosed = false
+    const encoder = new TextEncoder()
+
+    const stream = new ReadableStream<Uint8Array>({
+      start: (controller) => {
+        streamController = controller
+      },
+      cancel: () => {
+        isClosed = true
+      },
     })
+
+    const writeChunk = (chunk: unknown) => {
+      if (isClosed || !streamController) return
+      // Write as NDJSON (newline-delimited JSON)
+      const data = JSON.stringify(chunk) + '\n'
+      streamController.enqueue(encoder.encode(data))
+    }
+
+    const closeStream = () => {
+      if (isClosed || !streamController) return
+      isClosed = true
+      streamController.close()
+    }
+
+    // Set up timeout
+    const timeoutId = setTimeout(() => {
+      this._pendingRequests.delete(cmdMessage.id)
+      if (!isClosed) {
+        writeChunk({
+          id: crypto.randomUUID(),
+          type: MessageType.EXECUTE_COMMAND_RESPONSE,
+          thid: cmdMessage.id,
+          response: {
+            ok: false,
+            error: {
+              code: 'timeout',
+              message: `Request ${cmdMessage.id} timed out after ${this._timeout}ms`,
+            },
+          },
+        })
+        closeStream()
+      }
+    }, this._timeout)
+
+    // Register the pending request to write response and close stream
+    this._pendingRequests.set(cmdMessage.id, (response) => {
+      clearTimeout(timeoutId)
+      writeChunk(response)
+      closeStream()
+    })
+
+    // Emit the message to trigger command execution
+    this._emitMessage(cmdMessage)
+
+    return stream
+  }
+
+  /**
+   * Add middleware to the request chain (client mode only).
+   *
+   * Middleware functions are executed in the order they are added.
+   * Each middleware receives a context object and a `next` function.
+   * Call `next()` to continue to the next middleware or the actual fetch.
+   *
+   * @param middleware - Middleware function to add
+   * @returns this (for chaining)
+   */
+  public use(middleware: HTTPMiddleware): this {
+    this._middleware.push(middleware)
+    return this
+  }
+
+  /**
+   * The current mode of the channel: 'CLIENT' or 'SERVER'.
+   *
+   * @type {('CLIENT' | 'SERVER')}
+   */
+  public get mode(): HTTPChannelMode {
+    return !!this._baseUrl ? 'CLIENT' : 'SERVER'
+  }
+
+  /**
+   * Send a message to all registered listeners
+   *
+   * @param message - The message to send
+   */
+  private _emitMessage(message: CommandMessage): void {
+    for (const listener of this._messageListeners) {
+      listener(message)
+    }
+  }
+
+  /**
+   * Post a command message to the remote server using streaming (client mode only).
+   *
+   * Sends the request with `Accept: application/x-ndjson` header and reads
+   * the streaming NDJSON response.
+   *
+   * @param message - The command message to send
+   * @returns Promise that resolves with the first response message from the stream
+   */
+  private async _postStreaming(message: CommandMessage): Promise<CommandMessage> {
+    if (this.mode === 'SERVER') {
+      throw new Error('Cannot send HTTP request in server mode')
+    }
+
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), this._timeout)
+
+    // Create middleware context
+    const ctx: HTTPMiddlewareContext = {
+      url: `${this._baseUrl}/cmd`,
+      headers: new Headers({
+        'Content-Type': 'application/json',
+        Accept: 'application/x-ndjson',
+      }),
+      message,
+      abortController: controller,
+    }
+
+    // Build the middleware chain
+    const executeRequest = async (): Promise<CommandMessage> => {
+      try {
+        const response = await fetch(ctx.url, {
+          method: 'POST',
+          headers: ctx.headers,
+          body: JSON.stringify(ctx.message),
+          signal: ctx.abortController.signal,
+        })
+
+        clearTimeout(timeoutId)
+
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}: ${response.statusText}`)
+        }
+
+        // Read the NDJSON stream and return the first complete message
+        const reader = response.body?.getReader()
+        if (!reader) {
+          throw new Error('Response body is not readable')
+        }
+
+        const decoder = new TextDecoder()
+        let buffer = ''
+
+        while (true) {
+          const { value, done } = await reader.read()
+
+          if (done) {
+            // Stream ended, try to parse any remaining buffer
+            if (buffer.trim()) {
+              const msg = JSON.parse(buffer.trim())
+              validateMessage(msg)
+              return msg
+            }
+            throw new Error('Stream ended without a complete message')
+          }
+
+          buffer += decoder.decode(value, { stream: true })
+
+          // Check for complete NDJSON lines
+          const lines = buffer.split('\n')
+          for (let i = 0; i < lines.length - 1; i++) {
+            const line = lines[i].trim()
+            if (line) {
+              // We have a complete JSON line - parse and return it
+              const msg = JSON.parse(line)
+              validateMessage(msg)
+              // Cancel the reader since we got our response
+              await reader.cancel()
+              return msg
+            }
+          }
+          // Keep the incomplete last line in the buffer
+          buffer = lines[lines.length - 1]
+        }
+      } catch (error) {
+        clearTimeout(timeoutId)
+        throw error
+      }
+    }
+
+    // Execute middleware chain
+    if (this._middleware.length === 0) {
+      return executeRequest()
+    }
+
+    // Build the chain from right to left
+    let chain = executeRequest
+    for (let i = this._middleware.length - 1; i >= 0; i--) {
+      const middleware = this._middleware[i]
+      const next = chain
+      chain = () => middleware(ctx, next)
+    }
+
+    return chain()
   }
 }

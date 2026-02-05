@@ -1,5 +1,5 @@
 import type { ICommandDefinitionBase } from '../../registry'
-import type { IMessageListCommandsResponse } from '../../registry/command-messages-types'
+import type { SchemaDoc } from '../../schemas'
 
 /**
  * Fetch Schema Options
@@ -48,7 +48,7 @@ export async function fetchSchemas({
       throw new Error(`HTTP ${response.status}: ${response.statusText}`)
     }
 
-    const data = (await response.json()) as IMessageListCommandsResponse
+    const data = (await response.json()) as SchemaDoc
 
     if (!data.commands || !Array.isArray(data.commands)) {
       throw new Error('Invalid response: missing commands array')

@@ -22,7 +22,7 @@ Host: api.example.com
 
 ```json
 {
-  "status": "ok",
+  "cmdschema": "1.0.0",
   "commands": [
     {
       "id": "user.create",
@@ -56,6 +56,20 @@ Host: api.example.com
 ### POST /cmd — Message Transport
 
 All protocol messages are sent via `POST /cmd`. The `type` field determines how the message is processed.
+
+**Default Transport: HTTP Streaming (NDJSON)**
+
+By default, HTTPChannel uses NDJSON (Newline-Delimited JSON) streaming for the response. Each message is a complete JSON object on its own line, allowing clients to process responses as they arrive:
+
+```
+{"id":"...","type":"execute.command.response","thid":"...","response":{"ok":true,"result":{...}}}
+{"id":"...","type":"event","eventId":"user.updated","payload":{...}}
+```
+
+This streaming approach enables:
+- **Real-time event delivery** — Events can be pushed to the client as they occur
+- **Progressive responses** — Large results can be streamed incrementally
+- **Efficient long-polling** — Single connection for both command responses and events
 
 ## Message Types
 

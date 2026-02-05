@@ -1,3 +1,7 @@
+import type * as v from 'valibot'
+
+import type { CommandMessageSchema } from './command-message-schemas'
+
 /**
  * Base class for all Command Registry Errors
  */
@@ -6,7 +10,27 @@ export abstract class CommandRegistryError extends Error {
 }
 
 /**
- * Enum of all Command Error Codes
+ * Enum of all Command Registry Error Codes
+ */
+export enum CommandRegistryErrorCode {
+  INVALID_MESSAGE = 'invalid_message',
+}
+
+/**
+ * Error thrown if the registry receives an invalid message
+ */
+export class InvalidMessageError extends CommandRegistryError {
+  readonly code = CommandRegistryErrorCode.INVALID_MESSAGE
+  readonly issues: v.SafeParseResult<typeof CommandMessageSchema>['issues']
+
+  constructor(issues: v.SafeParseResult<typeof CommandMessageSchema>['issues']) {
+    super('Invalid message received by Command Registry')
+    this.issues = issues
+  }
+}
+
+/**
+ * Enum of all Register Command Error Codes
  */
 export enum CommandRegisterErrorCode {
   DUPLICATE_COMMAND = 'duplicate_command',

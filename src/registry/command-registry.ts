@@ -23,8 +23,8 @@ import type {
   IMessageListCommandsResponse,
   IMessageRegisterCommandRequest,
   IMessageRegisterCommandResponse,
-} from './command-messages-types'
-import { MessageType } from './command-messages-types'
+} from './command-message-schemas'
+import { MessageType } from './command-message-schemas'
 import type {
   ICommandRegistryConfig,
   ICommandRegistrySchemas,
@@ -45,6 +45,7 @@ import type {
   ICommandDefinition,
   ICommandDefinitionBase,
   ICommandRegistry,
+  IListCommandDefinition,
   MessageID,
   RegisterCommandHandler,
 } from './command-registry-interface'
@@ -672,15 +673,15 @@ export class CommandRegistry<
    *
    * @returns   An array of ICommandDefinition for all registered commands
    */
-  public listCommands(): readonly Omit<ICommandDefinition, 'handler'>[] {
+  public listCommands(): readonly IListCommandDefinition[] {
     const result: Record<CommandID, ICommandDefinition> = Object.fromEntries(this._commands)
     // Return a clone of the result to prevent mutation
-    const immutableClone: ReadonlyArray<Omit<ICommandDefinition, 'handler'>> = Object.freeze(
+    const immutableClone: ReadonlyArray<IListCommandDefinition> = Object.freeze(
       Object.values(result).map((value) => {
         if (value.isLocal) {
           // Remove handler function reference from local commands
           const { handler: _handler, ...rest } = value
-          return Object.freeze({ ...rest } as Omit<ICommandDefinition, 'handler'>)
+          return Object.freeze({ ...rest } as IListCommandDefinition)
         }
         return Object.freeze({ ...value })
       }),

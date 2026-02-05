@@ -1,6 +1,11 @@
 import 'reflect-metadata'
 
-import { CommandRegistry, HTTPChannel, registerCommands } from '@coralstack/cmd-ipc'
+import {
+  CommandRegistry,
+  HTTPChannel,
+  publishSchemaDoc,
+  registerCommands,
+} from '@coralstack/cmd-ipc'
 import { TestLogger } from '@coralstack/cmd-ipc/testing'
 
 import { WorkerCommandSchema } from './command-schema'
@@ -9,7 +14,7 @@ import { CalcService } from './services/calc-service'
 // CORS headers for local development
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+  'Access-Control-Allow-Methods': 'POST, GET, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type',
 }
 
@@ -49,14 +54,16 @@ export default {
       return new Response(null, { headers: corsHeaders })
     }
 
-    // Handle command requests
+    // Handle command requests - always use streaming (NDJSON)
     if (request.method === 'POST' && url.pathname === '/cmd') {
       try {
         const body = await request.json()
-        const response = await channel.handleMessage(body)
-        return new Response(JSON.stringify(response), {
+        const stream = channel.handleRequest(body)
+
+        return new Response(stream, {
           headers: {
-            'Content-Type': 'application/json',
+            'Content-Type': 'application/x-ndjson',
+            'Transfer-Encoding': 'chunked',
             ...corsHeaders,
           },
         })
@@ -75,7 +82,7 @@ export default {
 
     // Command schema endpoint
     if (request.method === 'GET' && url.pathname === '/cmds.json') {
-      return new Response(JSON.stringify({ status: 'ok', commands: registry.listCommands() }), {
+      return new Response(JSON.stringify(publishSchemaDoc(registry.listCommands())), {
         headers: {
           'Content-Type': 'application/json',
           ...corsHeaders,

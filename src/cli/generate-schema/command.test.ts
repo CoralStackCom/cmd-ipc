@@ -3,6 +3,7 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 
 import type { ICommandDefinitionBase } from '../../registry'
+import type { SchemaDoc } from '../../schemas'
 import { generateSchema } from './command'
 import type { JsonSchema } from './schema-converter'
 
@@ -12,6 +13,14 @@ vi.stubGlobal('fetch', mockFetch)
 
 // Helper to cast test objects to JsonSchema (StandardJsonSchema is a branded type)
 const schema = <T>(obj: T): JsonSchema => obj as JsonSchema
+
+// Helper to create a valid SchemaDoc response (as returned by GET /cmds.json)
+function createSchemaDoc(commands: ICommandDefinitionBase[]): SchemaDoc {
+  return {
+    cmdschema: '1.0.0',
+    commands,
+  }
+}
 
 describe('generateSchema', () => {
   const testDir = join(tmpdir(), 'cmd-ipc-test-' + Date.now())
@@ -77,13 +86,7 @@ describe('generateSchema', () => {
 
     mockFetch.mockResolvedValue({
       ok: true,
-      json: () =>
-        Promise.resolve({
-          id: '12345',
-          thid: '67890',
-          type: 'list.commands.response',
-          commands: mockCommands,
-        }),
+      json: () => Promise.resolve(createSchemaDoc(mockCommands)),
     })
 
     await generateSchema({
@@ -119,15 +122,14 @@ describe('generateSchema', () => {
     mockFetch.mockResolvedValue({
       ok: true,
       json: () =>
-        Promise.resolve({
-          type: 'list.commands.response',
-          commands: [
+        Promise.resolve(
+          createSchemaDoc([
             {
               id: 'user.create',
               description: 'Create a user',
             },
-          ],
-        }),
+          ]),
+        ),
     })
 
     await generateSchema({
@@ -148,11 +150,7 @@ describe('generateSchema', () => {
   it('should convert prefix to PascalCase for schema name', async () => {
     mockFetch.mockResolvedValue({
       ok: true,
-      json: () =>
-        Promise.resolve({
-          type: 'list.commands.response',
-          commands: [],
-        }),
+      json: () => Promise.resolve(createSchemaDoc([])),
     })
 
     await generateSchema({
@@ -170,11 +168,7 @@ describe('generateSchema', () => {
 
     mockFetch.mockResolvedValue({
       ok: true,
-      json: () =>
-        Promise.resolve({
-          type: 'list.commands.response',
-          commands: [],
-        }),
+      json: () => Promise.resolve(createSchemaDoc([])),
     })
 
     await generateSchema({
@@ -218,15 +212,14 @@ describe('generateSchema', () => {
     mockFetch.mockResolvedValue({
       ok: true,
       json: () =>
-        Promise.resolve({
-          type: 'list.commands.response',
-          commands: [
+        Promise.resolve(
+          createSchemaDoc([
             {
               id: 'simple.command',
               description: 'A simple command without schemas',
             },
-          ],
-        }),
+          ]),
+        ),
     })
 
     await generateSchema({

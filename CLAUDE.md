@@ -10,8 +10,9 @@ Command IPC is an Inter-Process Communication (IPC) library for running typed Co
 
 ```bash
 yarn                    # Install dependencies
-yarn build              # Build with tsup (ESM + CJS outputs)
-yarn typecheck          # TypeScript type checking
+yarn build              # Build main library with tsup (ESM + CJS outputs)
+yarn typecheck          # TypeScript type checking only for main library
+yarn typecheck:all      # TypeScript type checking for all workspaces including examples
 yarn test               # Run vitest tests
 yarn test:run           # One-time test run (no watch)
 yarn test:ui            # Vitest UI
