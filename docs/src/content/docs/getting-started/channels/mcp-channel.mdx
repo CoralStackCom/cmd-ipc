@@ -8,7 +8,7 @@ import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 `MCPChannel` enables integration with the <a href="https://modelcontextprotocol.io/" target="_blank" rel="noopener">Model Context Protocol (MCP)</a>, allowing cmd-ipc commands to be exposed as tools for AI agents. It supports both client and server modes using the MCP Streamable HTTP transport.
 
 <Aside type="caution" title="Protocol Version">
-  MCPChannel uses the **MCP protocol version 2025-03-26** by default and is designed specifically for this version. Older protocol versions (e.g., 2024-11-05) are not supported and may result in compatibility issues. Ensure your MCP clients and servers are using a compatible protocol version.
+  MCPChannel uses the **MCP protocol version 2025-11-25** by default and is designed specifically for this version. Older protocol versions (e.g., 2025-06-18) are not supported and may result in compatibility issues. Ensure your MCP clients and servers are using a compatible protocol version.
 </Aside>
 
 Use cases include:
@@ -510,7 +510,7 @@ If connections timeout:
 
 ## OAuth Authentication
 
-MCPClientChannel supports OAuth 2.1 authentication for connecting to protected MCP servers. The implementation follows the <a href="https://modelcontextprotocol.io/specification/2025-03-26/basic/authorization" target="_blank" rel="noopener">MCP OAuth specification</a>.
+MCPClientChannel supports OAuth 2.1 authentication for connecting to protected MCP servers. The implementation follows the <a href="https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization" target="_blank" rel="noopener">MCP OAuth specification</a>.
 
 ### OAuth Configuration
 
