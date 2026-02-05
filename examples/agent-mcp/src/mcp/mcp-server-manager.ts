@@ -3,11 +3,13 @@
  *
  * Manages dynamic MCP server connections using MCPClientChannel.
  * Provides a central place to add/remove MCP servers and track their tools.
+ * Automatically handles OAuth authentication for servers that require it.
  */
 
 import { MCPClientChannel } from '@coralstack/cmd-ipc'
 
 import { CommandRegistry } from '../commands/command-registry'
+import { localStorageTokenStorage, openOAuthPopup } from '../utils/oauth-popup'
 
 /**
  * Represents a connected MCP server with its tools
@@ -17,7 +19,7 @@ export interface MCPServerConnection {
   url: string
   name: string
   version: string
-  status: 'connecting' | 'connected' | 'error' | 'disconnected'
+  status: 'connecting' | 'authenticating' | 'connected' | 'error' | 'disconnected'
   error?: string
   tools: MCPToolInfo[]
   channel?: MCPClientChannel
@@ -72,6 +74,31 @@ class MCPServerManagerClass {
   }
 
   /**
+   * Convert a remote URL to use the local CORS proxy.
+   *
+   * Converts: https://mcp.stripe.com/mcp
+   * To:       /mcp-proxy/https/mcp.stripe.com/mcp
+   *
+   * This allows browser-based MCP connections to avoid CORS issues.
+   */
+  private _toProxyUrl(url: string): string {
+    try {
+      const parsed = new URL(url)
+      // Only proxy external URLs, not localhost
+      if (parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1') {
+        return url
+      }
+      // Convert to proxy URL: /mcp-proxy/{protocol}/{host}{path}
+      // Only include pathname if it's not just "/" (root path)
+      const pathPart = parsed.pathname === '/' ? '' : parsed.pathname
+      return `/mcp-proxy/${parsed.protocol.replace(':', '')}/${parsed.host}${pathPart}${parsed.search}`
+    } catch {
+      // If URL parsing fails, return as-is
+      return url
+    }
+  }
+
+  /**
    * Validate server name format.
    * Must be a valid identifier: alphanumeric, dashes, dots, underscores.
    * Must start with a letter or underscore.
@@ -122,9 +149,7 @@ class MCPServerManagerClass {
       (s) => s.url === normalizedUrl,
     )
     if (existingServerByUrl) {
-      throw new Error(
-        `This MCP server URL is already connected as "${existingServerByUrl.id}"`,
-      )
+      throw new Error(`This MCP server URL is already connected as "${existingServerByUrl.id}"`)
     }
 
     // Create initial server state
@@ -141,16 +166,39 @@ class MCPServerManagerClass {
     this._notifyListeners()
 
     try {
-      // Create MCPClientChannel
+      // Convert URL to use local CORS proxy for external servers
+      const proxyUrl = this._toProxyUrl(normalizedUrl)
+
+      // Determine endpoint: if user provided a path, use it as endpoint; otherwise use empty string
+      // This handles servers like https://mcp.stripe.com (no path) vs https://example.com/mcp (has path)
+      const parsedUrl = new URL(normalizedUrl)
+      const endpoint = parsedUrl.pathname === '/' ? '' : parsedUrl.pathname
+
+      // Create MCPClientChannel with OAuth support
       const channel = new MCPClientChannel({
         id: serverId,
-        baseUrl: normalizedUrl,
+        baseUrl: proxyUrl,
+        endpoint, // Use the path from URL as endpoint, or empty if no path
         commandPrefix: serverId, // Use server ID as prefix to avoid collisions
         timeout: 30000,
         clientInfo: {
           name: 'cmd-ipc-agent-mcp',
           version: '1.0.0',
         },
+        // Enable OAuth - automatically handles 401 responses
+        openAuthBrowser: async (authUrl: string) => {
+          // Update status to show we're authenticating
+          server.status = 'authenticating'
+          this._servers.set(serverId, server)
+          this._notifyListeners()
+
+          // Open OAuth popup and wait for authorization code
+          return openOAuthPopup(authUrl)
+        },
+        // Persist tokens in localStorage
+        tokenStorage: localStorageTokenStorage,
+        // Transform OAuth URLs through the CORS proxy
+        oauthUrlTransformer: (url: string) => this._toProxyUrl(url),
       })
 
       // Register with CommandRegistry

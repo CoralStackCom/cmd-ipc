@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { MessageType } from '../../registry/command-message-schemas'
+import { MessageType } from '../../../registry/command-message-schemas'
 
+import { resetRequestIdCounter } from '../mcp-json-rpc'
+import type { MCPInitializeResult, MCPToolsListResult } from '../mcp-types'
 import { MCPClientChannel } from './mcp-client-channel'
-import { resetRequestIdCounter } from './mcp-json-rpc'
-import type { MCPInitializeResult, MCPToolsListResult } from './mcp-types'
 
 // Mock fetch globally
 const mockFetch = vi.fn()

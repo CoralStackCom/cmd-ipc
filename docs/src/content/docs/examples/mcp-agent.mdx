@@ -1,11 +1,11 @@
 ---
 title: AI Agent MCP Example
-description: Exposing commands as AI agent tools via tool calling
+description: Exposing commands as AI agent tools via tool calling with MCP server integration
 ---
 
 import { Aside } from '@astrojs/starlight/components';
 
-The AI Agent MCP example demonstrates how to expose cmd-ipc commands as tools for AI agents. It uses the <a href="https://sdk.vercel.ai/" target="_blank" rel="noopener">Vercel AI SDK</a> to integrate with Google Gemini, showing how commands can be easily converted to tools for any AI agent framework.
+The AI Agent MCP example demonstrates how to expose cmd-ipc commands as tools for AI agents, with support for connecting to external MCP servers. It uses the <a href="https://sdk.vercel.ai/" target="_blank" rel="noopener">Vercel AI SDK</a> to integrate with Google Gemini, showing how commands can be easily converted to tools for any AI agent framework.
 
 ## Architecture
 
@@ -13,20 +13,37 @@ The AI Agent MCP example demonstrates how to expose cmd-ipc commands as tools fo
 flowchart TB
     subgraph Browser["React SPA (Vite)"]
         Chat["Chat Interface"]
-        Hook["useGeminiChat Hook\n(Vercel AI SDK)"]
-        Tools["MCP Tools Layer"]
+        Hook["Gemini Chat\n(Vercel AI SDK)"]
+        Tools["Tools Layer"]
         Registry["CommandRegistry"]
-        Commands["math.add\nmath.multiply\nmath.divide\nmath.factorial"]
+
+        subgraph LocalCmds["Local Commands"]
+            LC["math.add\nmath.multiply\nmath.factorial"]
+        end
+
+        subgraph MCPChannels["MCP Client Channels"]
+            MCP1["stripe.*"]
+            MCP2["cloudflare.*"]
+        end
+
+        Proxy["CORS Proxy\n/mcp-proxy/*"]
     end
 
-    subgraph Gemini["Google Gemini API"]
-        Model["Gemini 2.0 Flash"]
+    subgraph External["External Services"]
+        Gemini["Google Gemini API"]
+        MCPServer1["MCP Server\n(e.g., Stripe)"]
+        MCPServer2["MCP Server\n(e.g., Cloudflare)"]
     end
 
     Chat --> Hook
-    Hook <-->|"Streaming + Tool Calls"| Model
+    Hook <-->|"Streaming + Tool Calls"| Gemini
     Hook --> Tools
-    Tools --> Registry --> Commands
+    Tools --> Registry
+    Registry --> LocalCmds
+    Registry --> MCPChannels
+    MCPChannels --> Proxy
+    Proxy --> MCPServer1
+    Proxy --> MCPServer2
 ```
 
 ## Overview
@@ -35,10 +52,12 @@ This example includes:
 
 - **Pure client-side React SPA** (no backend required)
 - **Real-time streaming chat** with Google Gemini 2.0 Flash
-- **Commands exposed as tools** via cmd-ipc CommandRegistry
-- **Multi-step tool execution** (AI can call tools and respond based on results)
+- **Local commands exposed as tools** via cmd-ipc CommandRegistry
+- **Dynamic MCP server connections** - add/remove servers at runtime
+- **Automatic OAuth handling** - seamlessly authenticates with protected MCP servers
+- **CORS proxy** - connects to external MCP servers from the browser
+- **Multi-step tool execution** - AI can chain multiple tool calls
 - **Tool calls and results** displayed in the chat UI
-- **Markdown rendering** with syntax highlighting
 - **Token usage tracking**
 
 ## Project Structure
@@ -50,16 +69,34 @@ examples/agent-mcp/
 ├── index.html
 ├── .env.example
 └── src/
-    ├── main.tsx
-    ├── App.tsx               # Chat interface
-    ├── styles.css
-    ├── agent/
-    │   ├── useGeminiChat.ts  # Chat hook with AI SDK
-    │   └── list-tools.ts     # Converts commands to AI SDK tools
-    └── commands/
-        ├── command-registry.ts
-        ├── command-schema.ts
-        └── command-handlers.ts
+    ├── index.tsx              # Entry point
+    ├── App.tsx                # Main app with tabs (Chat, MCP Servers)
+    ├── styles.css             # Application styles
+    │
+    ├── agent/                 # AI agent integration
+    │   ├── gemini-chat-transport.ts  # Gemini streaming transport
+    │   └── list-tools.ts             # Converts commands to AI SDK tools
+    │
+    ├── commands/              # Local command definitions
+    │   ├── command-registry.ts       # Shared CommandRegistry instance
+    │   ├── command-schema.ts         # Command schemas (Valibot)
+    │   └── calc-service.ts           # Calculator service commands
+    │
+    ├── components/            # React components
+    │   ├── ChatTab.tsx               # Chat interface with Gemini
+    │   ├── MCPServersTab.tsx         # MCP server management UI
+    │   └── ToolsSidebar.tsx          # Available tools display
+    │
+    ├── mcp/                   # MCP server management
+    │   └── mcp-server-manager.ts     # MCPClientChannel management
+    │
+    ├── middleware/            # Vite dev server middleware
+    │   ├── index.ts                  # Middleware exports
+    │   ├── mcp-proxy.ts              # CORS proxy for MCP servers
+    │   └── spa-fallback.ts           # SPA routing for OAuth callbacks
+    │
+    └── utils/                 # Utility functions
+        └── oauth-popup.ts            # OAuth popup and token storage
 ```
 
 ## Running the Example
@@ -69,6 +106,162 @@ yarn start:examples-agent-mcp
 ```
 
 Open http://localhost:5173 and enter your Google AI API key.
+
+## Adding MCP Servers
+
+The example allows you to dynamically connect to external MCP servers at runtime:
+
+1. Click the **MCP Servers** tab
+2. Enter a server name (e.g., `stripe` or `cloudflare-docs`)
+3. Enter the MCP server URL (e.g., `https://mcp.stripe.com`)
+4. Click **Add Server**
+
+The server's tools will be registered with the CommandRegistry using the server name as a prefix (e.g., `stripe.create_payment_link`). All tools appear in the sidebar and are available for the AI to use.
+
+### MCP Server Manager
+
+The `MCPServerManager` class handles connecting to external MCP servers:
+
+```typescript
+import { MCPClientChannel } from '@coralstack/cmd-ipc'
+
+// Add a server - tools are automatically registered
+await MCPServerManager.addServer('stripe', 'https://mcp.stripe.com')
+
+// All tools from the server are now available with the prefix:
+// stripe.create_payment_link, stripe.list_products, etc.
+
+// Remove a server
+await MCPServerManager.removeServer('stripe')
+
+// Get all connected servers
+const servers = MCPServerManager.getServers()
+
+// Subscribe to server changes
+const unsubscribe = MCPServerManager.subscribe((servers) => {
+  console.log('Servers changed:', servers)
+})
+```
+
+### CORS Proxy
+
+Since browsers enforce CORS restrictions, the example includes a Vite middleware that proxies requests to external MCP servers:
+
+```
+/mcp-proxy/{protocol}/{host}/{path} → {protocol}://{host}/{path}
+```
+
+For example:
+- `/mcp-proxy/https/mcp.stripe.com/mcp` → `https://mcp.stripe.com/mcp`
+
+The proxy is implemented in `src/middleware/mcp-proxy.ts` and handles:
+- Forwarding requests with proper headers
+- CORS preflight (OPTIONS) requests
+- Adding CORS headers to responses
+
+## OAuth Authentication
+
+When connecting to an MCP server that requires authentication, the example automatically handles the OAuth 2.1 flow.
+
+### How OAuth Works
+
+```mermaid
+sequenceDiagram
+    participant App as React App
+    participant Channel as MCPClientChannel
+    participant Handler as MCPOAuthHandler
+    participant Popup as OAuth Popup
+    participant Server as MCP Server
+    participant Auth as Auth Server
+
+    App->>Channel: addServer('stripe', url)
+    Channel->>Server: POST /mcp (initialize)
+    Server-->>Channel: 401 Unauthorized
+    Channel->>Handler: handleUnauthorized()
+    Handler->>Server: GET /.well-known/oauth-protected-resource
+    Server-->>Handler: Resource metadata (auth server URL)
+    Handler->>Auth: GET /.well-known/oauth-authorization-server
+    Auth-->>Handler: Auth server metadata
+    Handler->>Auth: POST /register (dynamic client registration)
+    Auth-->>Handler: client_id, client_secret
+    Handler->>Popup: Open authorization URL
+    Popup->>Auth: User authorizes
+    Auth-->>Popup: Redirect with code
+    Popup->>App: postMessage(code) + localStorage
+    App->>Handler: Authorization code
+    Handler->>Auth: POST /token (exchange code)
+    Auth-->>Handler: access_token, refresh_token
+    Handler->>Channel: Retry with token
+    Channel->>Server: POST /mcp (with Bearer token)
+    Server-->>Channel: Success (tools list)
+    Channel-->>App: Connected with tools
+```
+
+### OAuth Flow Steps
+
+1. **Initial Request**: `MCPClientChannel` sends an initialize request to the MCP server
+2. **401 Response**: Server responds with `401 Unauthorized` and a `WWW-Authenticate` header
+3. **Metadata Discovery**:
+   - Fetches Protected Resource Metadata (RFC 9728)
+   - Fetches Authorization Server Metadata (RFC 8414)
+4. **Dynamic Client Registration**: Registers the client dynamically (RFC 7591)
+5. **Authorization**: Opens a popup for user authorization using PKCE (S256)
+6. **Token Exchange**: Exchanges authorization code for tokens
+7. **Retry Request**: Retries the original request with the access token
+
+### OAuth Popup Implementation
+
+The OAuth popup (`src/utils/oauth-popup.ts`) uses multiple methods to receive the callback:
+
+```typescript
+export function openOAuthPopup(authUrl: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const popup = window.open(authUrl, 'oauth', 'width=600,height=700,popup=1')
+
+    // Method 1: postMessage (primary)
+    window.addEventListener('message', (event) => {
+      if (event.data?.type === 'mcp-oauth-callback') {
+        resolve(event.data.code)
+        popup.close()
+      }
+    })
+
+    // Method 2: localStorage (fallback for cross-origin redirects)
+    const checkStorage = setInterval(() => {
+      const stored = localStorage.getItem('mcp-oauth-callback')
+      if (stored) {
+        const data = JSON.parse(stored)
+        resolve(data.code)
+        popup.close()
+      }
+    }, 500)
+  })
+}
+```
+
+### Token Persistence
+
+Tokens are persisted in localStorage so you don't need to re-authenticate on page reload:
+
+```typescript
+const localStorageTokenStorage: OAuthTokenStorage = {
+  async get(serverUrl: string) {
+    const key = `mcp-oauth-tokens:${serverUrl}`
+    const stored = localStorage.getItem(key)
+    return stored ? JSON.parse(stored) : null
+  },
+
+  async set(serverUrl: string, tokens: OAuthTokens) {
+    const key = `mcp-oauth-tokens:${serverUrl}`
+    localStorage.setItem(key, JSON.stringify(tokens))
+  },
+
+  async clear(serverUrl: string) {
+    const key = `mcp-oauth-tokens:${serverUrl}`
+    localStorage.removeItem(key)
+  },
+}
+```
 
 ## Converting Commands to AI Tools
 

@@ -13,14 +13,14 @@ import type {
   IMessageExecuteCommandResponse,
   IMessageListCommandsRequest,
   IMessageListCommandsResponse,
-} from '../../registry/command-message-schemas'
-import { MessageType } from '../../registry/command-message-schemas'
+} from '../../../registry/command-message-schemas'
+import { MessageType } from '../../../registry/command-message-schemas'
 import type {
   ChannelCloseListener,
   ChannelEventListeners,
   ChannelMessageListener,
   ICommandChannel,
-} from '../command-channel-interface'
+} from '../../command-channel-interface'
 
 import {
   createError,
@@ -29,22 +29,20 @@ import {
   isNotification,
   isRequest,
   JSONRPC_ERRORS,
-} from './mcp-json-rpc'
-import { createSSEStream, prefersSSE, SSE_CONTENT_TYPE } from './mcp-sse'
+} from '../mcp-json-rpc'
+import { createSSEStream, prefersSSE, SSE_CONTENT_TYPE } from '../mcp-sse'
 import type {
   JSONRPCMessage,
   JSONRPCRequest,
   JSONRPCResponse,
-  MCPHttpResponse,
   MCPInfo,
   MCPInitializeParams,
   MCPJSONSchema,
   MCPServerCapabilities,
-  MCPServerChannelConfig,
-  MCPSession,
   MCPTool,
   MCPToolsCallParams,
-} from './mcp-types'
+} from '../mcp-types'
+import type { MCPHttpResponse, MCPServerChannelConfig, MCPSession } from './mcp-server-types'
 
 /**
  * Default timeout for pending requests (in milliseconds)

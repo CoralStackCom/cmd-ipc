@@ -7,26 +7,25 @@
  * @packageDocumentation
  */
 
-import { ExecuteCommandResponseErrorCode } from '../../registry/command-errors'
+import { ExecuteCommandResponseErrorCode } from '../../../registry/command-errors'
 import type {
   CommandMessage,
   IMessageExecuteCommandRequest,
   IMessageRegisterCommandRequest,
-} from '../../registry/command-message-schemas'
-import { MessageType } from '../../registry/command-message-schemas'
+} from '../../../registry/command-message-schemas'
+import { MessageType } from '../../../registry/command-message-schemas'
 import type {
   ChannelCloseListener,
   ChannelEventListeners,
   ChannelMessageListener,
   ICommandChannel,
-} from '../command-channel-interface'
+} from '../../command-channel-interface'
 
-import { createNotification, createRequest, generateRequestId } from './mcp-json-rpc'
-import { parseSSEStream, SSE_CONTENT_TYPE } from './mcp-sse'
+import { createNotification, createRequest, generateRequestId } from '../mcp-json-rpc'
+import { parseSSEStream, SSE_CONTENT_TYPE } from '../mcp-sse'
 import type {
   JSONRPCResponse,
   MCPClientCapabilities,
-  MCPClientChannelConfig,
   MCPInfo,
   MCPInitializeResult,
   MCPJSONSchema,
@@ -34,7 +33,9 @@ import type {
   MCPTool,
   MCPToolResult,
   MCPToolsListResult,
-} from './mcp-types'
+} from '../mcp-types'
+import type { MCPClientChannelConfig } from './mcp-client-types'
+import { MCPOAuthHandler } from './mcp-oauth-handler'
 
 /**
  * Default timeout for MCP requests (in milliseconds)
@@ -108,6 +109,9 @@ export class MCPClientChannel implements ICommandChannel {
   // Tool mapping: commandId (with prefix) -> MCP tool definition
   private readonly _toolsMap = new Map<string, MCPTool>()
 
+  // OAuth handler for servers requiring authentication
+  private readonly _oauthHandler?: MCPOAuthHandler
+
   /**
    * Constructor for MCPClientChannel
    *
@@ -122,6 +126,18 @@ export class MCPClientChannel implements ICommandChannel {
     this._clientInfo = config.clientInfo ?? DEFAULT_CLIENT_INFO
     this._capabilities = config.capabilities ?? {}
     this._protocolVersion = config.protocolVersion ?? DEFAULT_PROTOCOL_VERSION
+
+    // Initialize OAuth handler if browser callback is provided
+    if (config.openAuthBrowser) {
+      this._oauthHandler = new MCPOAuthHandler(
+        this._baseUrl,
+        config.openAuthBrowser,
+        config.tokenStorage,
+        config.clientInfo?.name ?? 'cmd-ipc',
+        config.oauthRedirectUri,
+        config.oauthUrlTransformer,
+      )
+    }
   }
 
   /**
@@ -321,13 +337,27 @@ export class MCPClientChannel implements ICommandChannel {
       headers.set('MCP-Session-Id', this._sessionId)
     }
 
+    // Add OAuth Authorization header if we have valid tokens
+    if (this._oauthHandler) {
+      const authHeader = this._oauthHandler.getAuthorizationHeader()
+      if (authHeader) {
+        headers.set('Authorization', authHeader)
+      }
+    }
+
     return headers
   }
 
   /**
    * Send a JSON-RPC request and wait for response
+   *
+   * Handles OAuth 401 responses automatically if OAuth is configured.
    */
-  private async _sendRequest<T>(method: string, params?: Record<string, unknown>): Promise<T> {
+  private async _sendRequest<T>(
+    method: string,
+    params?: Record<string, unknown>,
+    retryAfterAuth = true,
+  ): Promise<T> {
     const id = generateRequestId()
     const request = createRequest(id, method, params)
 
@@ -343,6 +373,31 @@ export class MCPClientChannel implements ICommandChannel {
       })
 
       clearTimeout(timeoutId)
+
+      // Handle 401 Unauthorized - attempt OAuth flow
+      if (response.status === 401 && this._oauthHandler && retryAfterAuth) {
+        const authenticated = await this._oauthHandler.handleUnauthorized(response)
+        if (authenticated) {
+          // Retry request with new token (don't retry again to avoid infinite loop)
+          return this._sendRequest<T>(method, params, false)
+        }
+        throw new Error('Authentication required but OAuth flow failed')
+      }
+
+      // Handle 403 Forbidden - attempt token refresh
+      if (response.status === 403 && this._oauthHandler && retryAfterAuth) {
+        const refreshed = await this._oauthHandler.refreshTokens()
+        if (refreshed) {
+          // Retry request with refreshed token
+          return this._sendRequest<T>(method, params, false)
+        }
+        // If refresh failed, try full OAuth flow
+        const authenticated = await this._oauthHandler.handleUnauthorized(response)
+        if (authenticated) {
+          return this._sendRequest<T>(method, params, false)
+        }
+        throw new Error('Access denied and token refresh failed')
+      }
 
       // Capture session ID from response header
       const sessionId = response.headers.get('MCP-Session-Id')

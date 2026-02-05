@@ -185,19 +185,6 @@ export interface MCPToolsCallParams {
 }
 
 // ============================================================================
-// HTTP Response Types
-// ============================================================================
-
-/**
- * Response type from MCPServerChannel.handleRequest()
- */
-export interface MCPHttpResponse {
-  status: number
-  headers: Record<string, string>
-  body?: string | ReadableStream<Uint8Array>
-}
-
-// ============================================================================
 // SSE Types
 // ============================================================================
 
@@ -209,74 +196,4 @@ export interface SSEEvent {
   event?: string
   data: string
   retry?: number
-}
-
-// ============================================================================
-// Channel Configuration Types
-// ============================================================================
-
-/**
- * MCPClientChannel configuration
- */
-export interface MCPClientChannelConfig {
-  /** Unique channel identifier */
-  id: string
-
-  /** MCP server URL (e.g., 'https://mcp.example.com') */
-  baseUrl: string
-
-  /** MCP endpoint path (default: '/mcp') */
-  endpoint?: string
-
-  /** Command prefix for registered tools (e.g., 'mcp.cloudflare') */
-  commandPrefix?: string
-
-  /** Request timeout in milliseconds (default: 30000) */
-  timeout?: number
-
-  /** Client info sent during initialization */
-  clientInfo?: MCPInfo
-
-  /** Requested capabilities */
-  capabilities?: MCPClientCapabilities
-
-  /** Protocol version to use (default: '2025-03-26') */
-  protocolVersion?: string
-}
-
-/**
- * MCPServerChannel configuration
- */
-export interface MCPServerChannelConfig {
-  /** Unique channel identifier */
-  id: string
-
-  /** Server info sent during initialization */
-  serverInfo?: MCPInfo
-
-  /** Offered capabilities */
-  capabilities?: MCPServerCapabilities
-
-  /** Protocol version to use (default: '2025-03-26') */
-  protocolVersion?: string
-
-  /** Enable session management (default: true) */
-  enableSessions?: boolean
-
-  /** Instructions to send to clients */
-  instructions?: string
-
-  /** Request timeout in milliseconds (default: 30000) */
-  timeout?: number
-}
-
-/**
- * MCP session state (used by server channel)
- */
-export interface MCPSession {
-  id: string
-  initialized: boolean
-  clientInfo?: MCPInfo
-  clientCapabilities?: MCPClientCapabilities
-  createdAt: number
 }

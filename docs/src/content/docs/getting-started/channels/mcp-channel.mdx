@@ -268,6 +268,9 @@ await registry.registerChannel(channel)
 | `clientInfo` | `MCPInfo` | No | `{ name: 'cmd-ipc', version: '1.0.0' }` | Client name and version |
 | `capabilities` | `MCPClientCapabilities` | No | `{}` | Requested capabilities |
 | `protocolVersion` | `string` | No | `'2025-11-25'` | MCP protocol version |
+| `openAuthBrowser` | `function` | No | - | OAuth callback to open browser for authorization |
+| `tokenStorage` | `OAuthTokenStorage` | No | - | OAuth token storage for persistence |
+| `oauthUrlTransformer` | `function` | No | - | Transform OAuth URLs (e.g., for CORS proxy) |
 
 ### Command Prefix
 
@@ -504,3 +507,188 @@ If connections timeout:
 1. Increase the `timeout` configuration option
 2. Check network connectivity to the MCP server
 3. Verify the `baseUrl` and `endpoint` are correct
+
+## OAuth Authentication
+
+MCPClientChannel supports OAuth 2.1 authentication for connecting to protected MCP servers. The implementation follows the <a href="https://modelcontextprotocol.io/specification/2025-03-26/basic/authorization" target="_blank" rel="noopener">MCP OAuth specification</a>.
+
+### OAuth Configuration
+
+```typescript
+import { MCPClientChannel } from '@coralstack/cmd-ipc'
+
+const channel = new MCPClientChannel({
+  id: 'secure-mcp',
+  baseUrl: 'https://mcp.example.com',
+
+  // OAuth: Callback to open browser for authorization
+  openAuthBrowser: async (authUrl: string) => {
+    // Open popup or redirect user to authUrl
+    // Return the authorization code from the callback
+    return openOAuthPopup(authUrl)
+  },
+
+  // OAuth: Optional token storage for persistence
+  tokenStorage: {
+    async get(serverUrl: string) {
+      return localStorage.getItem(`oauth-tokens:${serverUrl}`)
+    },
+    async set(serverUrl: string, tokens) {
+      localStorage.setItem(`oauth-tokens:${serverUrl}`, JSON.stringify(tokens))
+    },
+    async clear(serverUrl: string) {
+      localStorage.removeItem(`oauth-tokens:${serverUrl}`)
+    }
+  },
+
+  // OAuth: Optional URL transformer (useful for CORS proxies)
+  oauthUrlTransformer: (url: string) => {
+    // Transform OAuth URLs if needed (e.g., through a CORS proxy)
+    return url
+  },
+})
+```
+
+### OAuth Configuration Options
+
+| Option | Type | Required | Description |
+|--------|------|----------|-------------|
+| `openAuthBrowser` | `(url: string) => Promise<string>` | No | Callback to open browser for authorization and return the auth code |
+| `tokenStorage` | `OAuthTokenStorage` | No | Storage for persisting tokens across sessions |
+| `oauthUrlTransformer` | `(url: string) => string` | No | Transform OAuth URLs (e.g., for CORS proxy) |
+
+### How OAuth Works
+
+When connecting to an MCP server that requires authentication:
+
+1. **Initial Request**: The channel sends a request to the MCP server
+2. **401 Response**: Server responds with `401 Unauthorized` and a `WWW-Authenticate` header containing the resource metadata URL
+3. **Metadata Discovery**: The channel fetches:
+   - Protected Resource Metadata (RFC 9728) to find authorization servers
+   - Authorization Server Metadata (RFC 8414) or falls back to default endpoints
+4. **Dynamic Client Registration**: If supported, registers the client dynamically (RFC 7591)
+5. **Authorization**: Opens browser for user authorization using PKCE (S256)
+6. **Token Exchange**: Exchanges authorization code for tokens
+7. **Retry Request**: Retries the original request with the access token
+
+### Browser OAuth Flow Example
+
+For browser-based applications, you can use a popup window for OAuth:
+
+```typescript
+// oauth-popup.ts
+export function openOAuthPopup(authUrl: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    // Open popup window
+    const popup = window.open(
+      authUrl,
+      'oauth',
+      'width=600,height=700,popup=1'
+    )
+
+    if (!popup) {
+      reject(new Error('Popup blocked'))
+      return
+    }
+
+    // Listen for OAuth callback via postMessage
+    const handleMessage = (event: MessageEvent) => {
+      if (event.data?.type === 'oauth-callback') {
+        window.removeEventListener('message', handleMessage)
+        popup.close()
+
+        if (event.data.code) {
+          resolve(event.data.code)
+        } else {
+          reject(new Error(event.data.error || 'OAuth failed'))
+        }
+      }
+    }
+
+    window.addEventListener('message', handleMessage)
+  })
+}
+
+// In your callback page (e.g., /oauth/callback)
+const params = new URLSearchParams(window.location.search)
+const code = params.get('code')
+const error = params.get('error')
+
+if (window.opener) {
+  window.opener.postMessage({
+    type: 'oauth-callback',
+    code,
+    error,
+  }, window.location.origin)
+  window.close()
+}
+```
+
+### Token Storage
+
+For persistent OAuth tokens, implement the `OAuthTokenStorage` interface:
+
+```typescript
+interface OAuthTokenStorage {
+  get(serverUrl: string): Promise<OAuthTokens | null>
+  set(serverUrl: string, tokens: OAuthTokens): Promise<void>
+  clear(serverUrl: string): Promise<void>
+}
+
+interface OAuthTokens {
+  access_token: string
+  token_type: string
+  expires_in?: number
+  refresh_token?: string
+  scope?: string
+}
+```
+
+### CORS Proxy for Browser
+
+When connecting to external MCP servers from a browser, you may need a CORS proxy. Use `oauthUrlTransformer` to route OAuth requests through your proxy:
+
+```typescript
+const channel = new MCPClientChannel({
+  id: 'mcp-client',
+  baseUrl: '/proxy/https/mcp.example.com',  // Proxied URL
+
+  oauthUrlTransformer: (url: string) => {
+    // Route OAuth URLs through the same proxy
+    const parsed = new URL(url)
+    return `/proxy/${parsed.protocol.replace(':', '')}/${parsed.host}${parsed.pathname}${parsed.search}`
+  },
+})
+```
+
+### OAuth Handler
+
+For advanced use cases, you can use `MCPOAuthHandler` directly:
+
+```typescript
+import { MCPOAuthHandler } from '@coralstack/cmd-ipc'
+
+const oauthHandler = new MCPOAuthHandler(
+  'https://mcp.example.com',  // Server URL
+  openAuthBrowser,             // Browser callback
+  tokenStorage,                // Optional token storage
+  'my-app',                    // Client name for registration
+  'http://localhost:3000/callback', // Redirect URI
+  urlTransformer,              // Optional URL transformer
+)
+
+// Check if we have valid tokens
+if (oauthHandler.hasValidTokens()) {
+  const authHeader = oauthHandler.getAuthorizationHeader()
+  // Use authHeader in requests
+}
+
+// Handle 401 response
+const success = await oauthHandler.handleUnauthorized(response)
+
+// Refresh tokens
+const refreshed = await oauthHandler.refreshTokens()
+
+// Clear tokens (logout)
+await oauthHandler.clearTokens()
+```

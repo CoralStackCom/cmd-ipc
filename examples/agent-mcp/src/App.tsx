@@ -1,10 +1,56 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 
 import { ChatTab, type TokenUsage } from './components/ChatTab'
 import { MCPServersTab } from './components/MCPServersTab'
 import { ToolsSidebar } from './components/ToolsSidebar'
+import { writeOAuthCallback } from './utils/oauth-popup'
 
 type TabType = 'chat' | 'mcp-servers'
+
+/**
+ * Handle OAuth callback if this page was opened as a redirect.
+ * Sends the authorization code back to the opener window and closes.
+ *
+ * Uses two methods to communicate with the opener:
+ * 1. postMessage (primary) - works when window.opener is available
+ * 2. localStorage (fallback) - works when opener is lost due to cross-origin redirects
+ */
+function handleOAuthCallback(): boolean {
+  const params = new URLSearchParams(window.location.search)
+  const code = params.get('code')
+  const error = params.get('error')
+  const state = params.get('state')
+
+  // Check if this is an OAuth callback (has code or error in URL params)
+  if (code || error) {
+    const callbackData = {
+      code: code || undefined,
+      error: error || undefined,
+      state: state || undefined,
+    }
+
+    // Try postMessage first (preferred method)
+    if (window.opener) {
+      window.opener.postMessage(
+        {
+          type: 'mcp-oauth-callback',
+          ...callbackData,
+        },
+        window.location.origin,
+      )
+    }
+
+    // Always write to localStorage as fallback
+    // (handles case where window.opener is lost due to cross-origin redirects)
+    writeOAuthCallback(callbackData)
+
+    // Close this popup/redirect window after a brief delay
+    setTimeout(() => window.close(), 200)
+    return true
+  }
+
+  return false
+}
 
 export default function App() {
   const [apiKey, setApiKey] = useState<string | undefined>(undefined)
@@ -19,6 +65,11 @@ export default function App() {
   const [toolsVersion, setToolsVersion] = useState(0)
 
   const isConfigured = Boolean(apiKey)
+
+  // Handle OAuth callback on mount (if this is a callback redirect)
+  useEffect(() => {
+    handleOAuthCallback()
+  }, [])
 
   // Callback when MCP tools change - trigger re-render to update tools display
   const handleToolsChanged = useCallback(() => {

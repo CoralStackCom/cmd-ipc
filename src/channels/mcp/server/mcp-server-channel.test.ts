@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { ExecuteCommandResponseErrorCode } from '../../registry/command-errors'
-import { MessageType } from '../../registry/command-message-schemas'
+import { ExecuteCommandResponseErrorCode } from '../../../registry/command-errors'
+import { MessageType } from '../../../registry/command-message-schemas'
 
 import { MCPServerChannel } from './mcp-server-channel'
-import type { MCPHttpResponse } from './mcp-types'
+import type { MCPHttpResponse } from './mcp-server-types'
 
 /**
  * Helper to resolve handleRequest response (handles Promise | MCPHttpResponse)

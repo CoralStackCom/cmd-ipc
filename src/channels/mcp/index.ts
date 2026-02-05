@@ -1,8 +1,11 @@
-// MCP Channel implementations
-export { MCPClientChannel } from './mcp-client-channel'
-export { MCPServerChannel } from './mcp-server-channel'
+// Client channel and OAuth
+export { MCPClientChannel } from './client/mcp-client-channel'
+export { MCPOAuthHandler } from './client/mcp-oauth-handler'
 
-// JSON-RPC utilities
+// Server channel
+export { MCPServerChannel } from './server/mcp-server-channel'
+
+// JSON-RPC utilities (shared)
 export {
   JSONRPC_ERRORS,
   createError,
@@ -19,11 +22,11 @@ export {
   validateJSONRPCMessage,
 } from './mcp-json-rpc'
 
-// SSE utilities
+// SSE utilities (shared)
 export { SSE_CONTENT_TYPE, createSSEStream, parseSSEStream, prefersSSE } from './mcp-sse'
 export type { SSEWriter } from './mcp-sse'
 
-// Types
+// Shared types
 export type {
   JSONRPCError,
   JSONRPCMessage,
@@ -31,9 +34,7 @@ export type {
   JSONRPCRequest,
   JSONRPCResponse,
   MCPClientCapabilities,
-  MCPClientChannelConfig,
   MCPContent,
-  MCPHttpResponse,
   MCPImageContent,
   MCPInfo,
   MCPInitializeParams,
@@ -41,8 +42,6 @@ export type {
   MCPJSONSchema,
   MCPResourceContent,
   MCPServerCapabilities,
-  MCPServerChannelConfig,
-  MCPSession,
   MCPTextContent,
   MCPTool,
   MCPToolResult,
@@ -50,3 +49,21 @@ export type {
   MCPToolsListResult,
   SSEEvent,
 } from './mcp-types'
+
+// Client types
+export type { MCPClientChannelConfig } from './client/mcp-client-types'
+
+// Server types
+export type { MCPHttpResponse, MCPServerChannelConfig, MCPSession } from './server/mcp-server-types'
+
+// OAuth types (client)
+export type {
+  OAuthAuthorizationServerMetadata,
+  OAuthBrowserCallback,
+  OAuthClientRegistration,
+  OAuthClientRegistrationRequest,
+  OAuthProtectedResourceMetadata,
+  OAuthTokenStorage,
+  OAuthTokens,
+  OAuthUrlTransformer,
+} from './client/mcp-oauth-types'
