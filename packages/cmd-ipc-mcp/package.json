@@ -4,9 +4,18 @@
   "description": "MCP (Model Context Protocol) channel implementation for @coralstack/cmd-ipc",
   "keywords": [],
   "author": {
-    "name": "Angelfish Software LLC",
+    "name": "Coral Stack",
     "email": "support@coralstack.com"
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/CoralStackCom/cmd-ipc.git"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "homepage": "https://coralstack.com/cmd-ipc",
   "license": "MIT",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
