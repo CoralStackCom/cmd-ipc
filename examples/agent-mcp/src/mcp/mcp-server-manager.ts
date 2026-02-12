@@ -3,13 +3,17 @@
  *
  * Manages dynamic MCP server connections using MCPClientChannel.
  * Provides a central place to add/remove MCP servers and track their tools.
- * Automatically handles OAuth authentication for servers that require it.
+ * Uses the official @modelcontextprotocol/sdk for transport and authentication.
+ * Automatically detects when OAuth authorization is required and launches
+ * the OAuth flow in a popup window.
  */
 
-import { MCPClientChannel } from '@coralstack/cmd-ipc'
+import { MCPClientChannel } from '@coralstack/cmd-ipc-mcp'
+import { UnauthorizedError } from '@modelcontextprotocol/sdk/client/auth.js'
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 
 import { CommandRegistry } from '../commands/command-registry'
-import { localStorageTokenStorage, openOAuthPopup } from '../utils/oauth-popup'
+import { BrowserOAuthProvider } from '../utils/oauth-popup'
 
 /**
  * Represents a connected MCP server with its tools
@@ -38,6 +42,56 @@ export interface MCPToolInfo {
  * Listener type for server connection changes
  */
 export type MCPServerChangeListener = (servers: MCPServerConnection[]) => void
+
+/**
+ * Create a fetch function that routes external requests through the CORS proxy.
+ *
+ * The SDK's auth flow makes fetch calls to external servers (OAuth discovery,
+ * token exchange, dynamic client registration). In the browser, these would
+ * fail due to CORS. This custom fetch routes them through our Vite proxy.
+ *
+ * It also handles a special case: the SDK constructs `.well-known` discovery URLs
+ * from the transport URL (our proxy URL), producing paths like:
+ *   /.well-known/oauth-protected-resource/mcp-proxy/https/api.example.com/path
+ * These same-origin URLs contain the real server info embedded in the path.
+ * We detect the `/mcp-proxy/` pattern, reconstruct the real external URL, and
+ * route it through the proxy.
+ */
+function createProxiedFetch(): typeof fetch {
+  return (input: RequestInfo | URL, init?: RequestInit) => {
+    let url =
+      typeof input === 'string' ? new URL(input) : input instanceof URL ? input : new URL(input.url)
+
+    if (url.origin === window.location.origin) {
+      // Check if this is a same-origin URL with an embedded proxy path.
+      // The SDK constructs discovery URLs like:
+      //   http://localhost:5173/.well-known/oauth-protected-resource/mcp-proxy/https/host/path
+      // We need to extract the real server and rewrite to:
+      //   https://host/.well-known/oauth-protected-resource/path
+      const proxyMatch = url.pathname.match(/^(.+)\/mcp-proxy\/(https?)\/([\w.:-]+)(\/.*)?$/)
+      if (proxyMatch) {
+        const [, prefix, protocol, host, path = ''] = proxyMatch
+        // Reconstruct the real external URL
+        url = new URL(`${protocol}://${host}${prefix}${path}`)
+        // Fall through to proxy the external URL below
+      } else {
+        // Regular same-origin request, pass through to native fetch
+        return fetch(input, init)
+      }
+    }
+
+    // Route external requests through the CORS proxy
+    const proxyPath = `/mcp-proxy/${url.protocol.replace(':', '')}/${url.host}${url.pathname}${url.search}`
+    const proxyUrl = new URL(proxyPath, window.location.origin)
+
+    if (typeof input === 'string' || input instanceof URL) {
+      return fetch(proxyUrl, init)
+    }
+
+    // For Request objects, create a new request with the proxied URL
+    return fetch(new Request(proxyUrl, input), init)
+  }
+}
 
 /**
  * MCP Server Manager - singleton that manages MCP server connections
@@ -169,40 +223,65 @@ class MCPServerManagerClass {
       // Convert URL to use local CORS proxy for external servers
       const proxyUrl = this._toProxyUrl(normalizedUrl)
 
-      // Determine endpoint: if user provided a path, use it as endpoint; otherwise use empty string
-      // This handles servers like https://mcp.stripe.com (no path) vs https://example.com/mcp (has path)
-      const parsedUrl = new URL(normalizedUrl)
-      const endpoint = parsedUrl.pathname === '/' ? '' : parsedUrl.pathname
+      // Create OAuth provider for automatic auth detection
+      const authProvider = new BrowserOAuthProvider(normalizedUrl)
 
-      // Create MCPClientChannel with OAuth support
-      const channel = new MCPClientChannel({
+      // Helper to create transport and channel
+      const transportOpts = {
+        authProvider,
+        fetch: createProxiedFetch(),
+      }
+      const channelOpts = {
         id: serverId,
-        baseUrl: proxyUrl,
-        endpoint, // Use the path from URL as endpoint, or empty if no path
         commandPrefix: serverId, // Use server ID as prefix to avoid collisions
         timeout: 30000,
         clientInfo: {
-          name: 'cmd-ipc-agent-mcp',
-          version: '1.0.0',
+          name: 'cmd-ipc-agent-mcp' as const,
+          version: '1.0.0' as const,
         },
-        // Enable OAuth - automatically handles 401 responses
-        openAuthBrowser: async (authUrl: string) => {
-          // Update status to show we're authenticating
+      }
+
+      // Create SDK transport with auth provider and proxied fetch
+      let transport = new StreamableHTTPClientTransport(
+        new URL(proxyUrl, window.location.origin),
+        transportOpts,
+      )
+
+      // Create MCPClientChannel with SDK transport
+      let channel = new MCPClientChannel({ ...channelOpts, transport })
+
+      // Register with CommandRegistry (sets up message handlers, then calls channel.start())
+      // If the server requires OAuth, start() will throw UnauthorizedError after
+      // opening the auth popup via the BrowserOAuthProvider
+      try {
+        await CommandRegistry.registerChannel(channel)
+      } catch (error) {
+        if (error instanceof UnauthorizedError) {
+          // OAuth is required - the popup is already open from redirectToAuthorization()
           server.status = 'authenticating'
-          this._servers.set(serverId, server)
           this._notifyListeners()
 
-          // Open OAuth popup and wait for authorization code
-          return openOAuthPopup(authUrl)
-        },
-        // Persist tokens in localStorage
-        tokenStorage: localStorageTokenStorage,
-        // Transform OAuth URLs through the CORS proxy
-        oauthUrlTransformer: (url: string) => this._toProxyUrl(url),
-      })
+          // Wait for the user to complete the OAuth flow in the popup
+          const code = await authProvider.waitForAuthorizationCode()
 
-      // Register with CommandRegistry
-      await CommandRegistry.registerChannel(channel)
+          // Exchange the authorization code for tokens via the original transport
+          await transport.finishAuth(code)
+
+          // Create a fresh transport and channel - the old transport is in a
+          // "started" state and can't be reused. The auth provider now has tokens
+          // so the new transport will authenticate successfully.
+          transport = new StreamableHTTPClientTransport(
+            new URL(proxyUrl, window.location.origin),
+            transportOpts,
+          )
+          channel = new MCPClientChannel({ ...channelOpts, transport })
+
+          // Re-register replaces the old channel (same ID) in the registry
+          await CommandRegistry.registerChannel(channel)
+        } else {
+          throw error
+        }
+      }
 
       // Update server info from channel
       const serverInfo = channel.serverInfo

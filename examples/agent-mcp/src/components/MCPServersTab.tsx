@@ -26,7 +26,7 @@ function ServerItem({
 
   const statusColors: Record<MCPServerConnection['status'], string> = {
     connecting: '#f59e0b',
-    authenticating: '#3b82f6', // Blue - waiting for OAuth
+    authenticating: '#3b82f6',
     connected: '#22c55e',
     error: '#ef4444',
     disconnected: '#6b7280',

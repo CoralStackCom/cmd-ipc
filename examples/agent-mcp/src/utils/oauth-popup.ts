@@ -3,7 +3,16 @@
  *
  * Handles opening OAuth authorization in a popup window and
  * waiting for the callback with the authorization code.
+ * Provides a BrowserOAuthProvider that implements the SDK's OAuthClientProvider
+ * interface for browser-based OAuth flows.
  */
+
+import type { OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.js'
+import type {
+  OAuthClientInformationMixed,
+  OAuthClientMetadata,
+  OAuthTokens,
+} from '@modelcontextprotocol/sdk/shared/auth.js'
 
 /**
  * LocalStorage key for OAuth callback communication.
@@ -161,56 +170,144 @@ export function writeOAuthCallback(data: { code?: string; error?: string; state?
 }
 
 /**
- * LocalStorage-based token storage implementation.
+ * Browser-based OAuthClientProvider for the MCP SDK.
  *
- * Stores OAuth tokens in localStorage for persistence across sessions.
- * Tokens are stored with a prefix to avoid collisions.
+ * Implements the SDK's OAuthClientProvider interface for browser-based OAuth flows.
+ * Uses popup windows for authorization and localStorage for token/state persistence.
+ *
+ * Flow:
+ * 1. SDK detects auth is required (401 from MCP server)
+ * 2. SDK calls `redirectToAuthorization()` which opens an OAuth popup
+ * 3. SDK throws `UnauthorizedError`
+ * 4. Application catches the error and calls `waitForAuthorizationCode()`
+ * 5. User completes auth in popup, code is returned via postMessage/localStorage
+ * 6. Application calls `transport.finishAuth(code)` to exchange code for tokens
+ * 7. Connection is retried with the new tokens
  */
-export const localStorageTokenStorage = {
-  /**
-   * Get stored tokens for a server
-   */
-  async get(serverUrl: string): Promise<{
-    access_token: string
-    token_type: string
-    expires_in?: number
-    refresh_token?: string
-    scope?: string
-  } | null> {
-    const key = `mcp-oauth-tokens:${serverUrl}`
-    const stored = localStorage.getItem(key)
-    if (!stored) {
-      return null
+export class BrowserOAuthProvider implements OAuthClientProvider {
+  private _serverUrl: string
+  private _authCodePromise?: Promise<string>
+
+  constructor(serverUrl: string) {
+    this._serverUrl = serverUrl
+  }
+
+  get redirectUrl(): string {
+    return `${window.location.origin}/oauth/callback`
+  }
+
+  get clientMetadata(): OAuthClientMetadata {
+    return {
+      redirect_uris: [this.redirectUrl],
+      client_name: 'CMD-IPC Agent MCP Example',
+      token_endpoint_auth_method: 'none',
+      grant_types: ['authorization_code'],
+      response_types: ['code'],
     }
+  }
+
+  async clientInformation(): Promise<OAuthClientInformationMixed | undefined> {
+    const key = `mcp-oauth-client:${this._serverUrl}`
+    const stored = localStorage.getItem(key)
+    if (!stored) return undefined
     try {
       return JSON.parse(stored)
     } catch {
-      return null
+      return undefined
     }
-  },
+  }
 
-  /**
-   * Store tokens for a server
-   */
-  async set(
-    serverUrl: string,
-    tokens: {
-      access_token: string
-      token_type: string
-      expires_in?: number
-      refresh_token?: string
-      scope?: string
-    },
-  ): Promise<void> {
-    const key = `mcp-oauth-tokens:${serverUrl}`
+  async saveClientInformation(info: OAuthClientInformationMixed): Promise<void> {
+    const key = `mcp-oauth-client:${this._serverUrl}`
+    localStorage.setItem(key, JSON.stringify(info))
+  }
+
+  async tokens(): Promise<OAuthTokens | undefined> {
+    const key = `mcp-oauth-tokens:${this._serverUrl}`
+    const stored = localStorage.getItem(key)
+    if (!stored) return undefined
+    try {
+      return JSON.parse(stored)
+    } catch {
+      return undefined
+    }
+  }
+
+  async saveTokens(tokens: OAuthTokens): Promise<void> {
+    const key = `mcp-oauth-tokens:${this._serverUrl}`
     localStorage.setItem(key, JSON.stringify(tokens))
-  },
+  }
+
+  async redirectToAuthorization(authorizationUrl: URL): Promise<void> {
+    // Open the OAuth popup - store the promise so we can await the code later
+    this._authCodePromise = openOAuthPopup(authorizationUrl.toString())
+  }
+
+  async saveCodeVerifier(codeVerifier: string): Promise<void> {
+    const key = `mcp-oauth-verifier:${this._serverUrl}`
+    localStorage.setItem(key, codeVerifier)
+  }
+
+  async codeVerifier(): Promise<string> {
+    const key = `mcp-oauth-verifier:${this._serverUrl}`
+    return localStorage.getItem(key) ?? ''
+  }
 
   /**
-   * Clear stored tokens for a server
+   * Override resource URL validation for proxied connections.
+   *
+   * The SDK compares the transport URL (our proxy URL like http://localhost:5173/mcp-proxy/...)
+   * against the resource URL from the server's protected resource metadata (the real URL like
+   * https://api.githubcopilot.com/mcp). Since we're proxying, these won't match.
+   *
+   * We validate by checking that the resource URL matches the real server URL we're connecting to,
+   * and return the resource URL from the metadata so the OAuth token is scoped correctly.
    */
-  async clear(serverUrl: string): Promise<void> {
-    const key = `mcp-oauth-tokens:${serverUrl}`
-    localStorage.removeItem(key)
-  },
+  async validateResourceURL(_serverUrl: string | URL, resource?: string): Promise<URL | undefined> {
+    if (!resource) {
+      return undefined
+    }
+
+    // Validate that the resource matches our actual server URL (or its origin)
+    const resourceUrl = new URL(resource)
+    const actualUrl = new URL(this._serverUrl)
+
+    if (resourceUrl.origin !== actualUrl.origin) {
+      throw new Error(
+        `Protected resource ${resource} does not match expected server ${this._serverUrl}`,
+      )
+    }
+
+    // Return the real resource URL (not the proxy URL)
+    return resourceUrl
+  }
+
+  /**
+   * Wait for the user to complete the OAuth flow in the popup.
+   * Returns the authorization code from the popup callback.
+   *
+   * This is NOT part of the OAuthClientProvider interface - it's called
+   * by the MCPServerManager after catching UnauthorizedError.
+   */
+  async waitForAuthorizationCode(): Promise<string> {
+    if (!this._authCodePromise) {
+      throw new Error('No OAuth authorization in progress')
+    }
+    return this._authCodePromise
+  }
+
+  /**
+   * Invalidate stored credentials when the server rejects them.
+   */
+  async invalidateCredentials(scope: 'all' | 'client' | 'tokens' | 'verifier'): Promise<void> {
+    if (scope === 'all' || scope === 'tokens') {
+      localStorage.removeItem(`mcp-oauth-tokens:${this._serverUrl}`)
+    }
+    if (scope === 'all' || scope === 'client') {
+      localStorage.removeItem(`mcp-oauth-client:${this._serverUrl}`)
+    }
+    if (scope === 'all' || scope === 'verifier') {
+      localStorage.removeItem(`mcp-oauth-verifier:${this._serverUrl}`)
+    }
+  }
 }

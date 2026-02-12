@@ -29,7 +29,14 @@ jobs:
       - name: Build
         run: yarn build
 
-      - name: Publish to npm
+      - name: Publish @coralstack/cmd-ipc
         run: npm publish --access public
+        working-directory: packages/cmd-ipc
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish @coralstack/cmd-ipc-mcp
+        run: npm publish --access public
+        working-directory: packages/cmd-ipc-mcp
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

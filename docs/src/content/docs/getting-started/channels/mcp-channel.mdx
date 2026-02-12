@@ -1,40 +1,44 @@
 ---
-title: MCPChannel
-description: Using MCPChannel to expose commands as MCP tools for AI agents
+title: MCP Channels
+description: Using MCP channels to bridge cmd-ipc commands with MCP tools for AI agents
 ---
 
 import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
-`MCPChannel` enables integration with the <a href="https://modelcontextprotocol.io/" target="_blank" rel="noopener">Model Context Protocol (MCP)</a>, allowing cmd-ipc commands to be exposed as tools for AI agents. It supports both client and server modes using the MCP Streamable HTTP transport.
-
-<Aside type="caution" title="Protocol Version">
-  MCPChannel uses the **MCP protocol version 2025-11-25** by default and is designed specifically for this version. Older protocol versions (e.g., 2025-06-18) are not supported and may result in compatibility issues. Ensure your MCP clients and servers are using a compatible protocol version.
-</Aside>
+The `@coralstack/cmd-ipc-mcp` package provides MCP channel implementations that bridge <a href="https://modelcontextprotocol.io/" target="_blank" rel="noopener">Model Context Protocol (MCP)</a> with cmd-ipc. It uses the official <a href="https://www.npmjs.com/package/@modelcontextprotocol/sdk" target="_blank" rel="noopener">@modelcontextprotocol/sdk</a> under the hood, delegating all protocol handling — JSON-RPC, sessions, streaming, and OAuth — to the SDK.
 
 Use cases include:
 
 - Exposing application commands as AI agent tools
-- Connecting to remote MCP servers
+- Connecting to remote MCP servers and using their tools as local commands
 - Building AI-powered applications with tool calling
 - Creating MCP-compatible APIs
 
+## Installation
+
+```bash
+yarn add @coralstack/cmd-ipc-mcp @modelcontextprotocol/sdk
+```
+
+`@coralstack/cmd-ipc` is a peer dependency and must also be installed.
+
 ## Two Channel Types
 
-MCPChannel comes in two variants:
+| Channel | Direction | Use Case |
+|---------|-----------|----------|
+| **MCPServerChannel** | cmd-ipc → MCP | Expose cmd-ipc commands as MCP tools for AI agents to discover and call |
+| **MCPClientChannel** | MCP → cmd-ipc | Connect to remote MCP servers and use their tools as local commands |
 
-| Channel | Use Case |
-|---------|----------|
-| **MCPServerChannel** | Expose cmd-ipc commands as MCP tools for AI agents to call |
-| **MCPClientChannel** | Connect to remote MCP servers and use their tools as commands |
+Both channels accept an SDK `Transport` instance, which handles the underlying communication protocol (HTTP, stdio, WebSocket, etc.). This means **you choose the transport separately** — the channels focus purely on bridging cmd-ipc and MCP.
 
 ## MCPServerChannel
 
-`MCPServerChannel` exposes your cmd-ipc commands as MCP tools. AI agents can discover and call these tools via the MCP protocol.
+`MCPServerChannel` exposes your cmd-ipc commands as MCP tools. When an MCP client calls `tools/list`, the channel queries the cmd-ipc registry and returns all registered commands. When `tools/call` is invoked, the channel routes the request through cmd-ipc for execution.
 
 ### Configuration
 
 ```typescript
-import { MCPServerChannel } from '@coralstack/cmd-ipc'
+import { MCPServerChannel } from '@coralstack/cmd-ipc-mcp'
 
 const channel = new MCPServerChannel({
   id: 'mcp-server',
@@ -42,374 +46,577 @@ const channel = new MCPServerChannel({
     name: 'my-app',
     version: '1.0.0',
   },
-  capabilities: {
-    tools: {},
-  },
   instructions: 'Optional instructions for the AI agent',
-  enableSessions: true,  // Enable session management (default: true)
-  timeout: 30000,        // Request timeout in ms (default: 30000)
+  timeout: 30000,
 })
-
-await registry.registerChannel(channel)
 ```
-
-### Configuration Options
 
 | Option | Type | Required | Default | Description |
 |--------|------|----------|---------|-------------|
-| `id` | `string` | Yes | - | Unique channel identifier |
-| `serverInfo` | `MCPInfo` | No | `{ name: 'cmd-ipc', version: '1.0.0' }` | Server name and version |
-| `capabilities` | `MCPServerCapabilities` | No | `{ tools: {} }` | Offered capabilities |
-| `protocolVersion` | `string` | No | `'2025-11-25'` | MCP protocol version |
-| `enableSessions` | `boolean` | No | `true` | Enable session management |
-| `instructions` | `string` | No | - | Instructions sent to clients |
+| `id` | `string` | Yes | — | Unique channel identifier |
+| `serverInfo` | `Implementation` | No | `{ name: 'cmd-ipc', version: '1.0.0' }` | Server name and version sent to MCP clients |
+| `instructions` | `string` | No | — | Instructions sent to MCP clients during initialization |
 | `timeout` | `number` | No | `30000` | Request timeout in milliseconds |
 
-### Handling Requests
+### Connecting a Transport
 
-Use `handleRequest()` in your HTTP handler to process incoming MCP requests. The method returns an `MCPHttpResponse` object containing status, headers, and body.
+After creating the channel and registering it with a `CommandRegistry`, connect an SDK transport using `connectTransport()`:
 
-<Tabs>
-  <TabItem label="Express">
 ```typescript
-import express from 'express'
-import { Readable } from 'stream'
-
-const app = express()
-app.use(express.json())
-
-app.all('/mcp', async (req, res) => {
-  const method = req.method as 'GET' | 'POST' | 'DELETE'
-  const headers = new Headers()
-  for (const [key, value] of Object.entries(req.headers)) {
-    if (typeof value === 'string') headers.set(key, value)
-  }
-
-  const result = await channel.handleRequest(method, req.body, headers)
-
-  res.status(result.status)
-  for (const [key, value] of Object.entries(result.headers)) {
-    res.setHeader(key, value)
-  }
-
-  if (result.body instanceof ReadableStream) {
-    Readable.fromWeb(result.body).pipe(res)
-  } else if (result.body) {
-    res.send(result.body)
-  } else {
-    res.end()
-  }
-})
-
-app.listen(3000)
+await channel.connectTransport(transport)
 ```
-  </TabItem>
-  <TabItem label="Cloudflare Workers">
+
+The transport handles all protocol details (HTTP, stdio, etc.). See the examples below for common setups.
+
+### Stdio Server
+
+The simplest setup — ideal for MCP clients like Claude Desktop that communicate over stdio:
+
 ```typescript
-export default {
-  async fetch(request: Request): Promise<Response> {
-    const url = new URL(request.url)
+import { CommandRegistry, Command, registerCommands } from '@coralstack/cmd-ipc'
+import { MCPServerChannel } from '@coralstack/cmd-ipc-mcp'
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 
-    if (url.pathname === '/mcp') {
-      const method = request.method as 'GET' | 'POST' | 'DELETE'
-      const body = method === 'POST' ? await request.json() : undefined
-      const headers = request.headers
-
-      const result = await channel.handleRequest(method, body, headers)
-
-      return new Response(result.body, {
-        status: result.status,
-        headers: result.headers,
-      })
-    }
-
-    return new Response('Not Found', { status: 404 })
+class MathCommands {
+  @Command('math.add', 'Add two numbers')
+  add({ a, b }: { a: number; b: number }) {
+    return a + b
   }
 }
-```
-  </TabItem>
-  <TabItem label="Node.js HTTP">
-```typescript
-import { createServer } from 'http'
-import { Readable } from 'stream'
 
-const server = createServer(async (req, res) => {
-  if (req.url === '/mcp') {
-    const method = req.method as 'GET' | 'POST' | 'DELETE'
+const registry = new CommandRegistry({ id: 'server' })
+registerCommands([new MathCommands()], registry)
 
-    // Parse body for POST requests
-    let body: unknown
-    if (method === 'POST') {
-      const chunks: Buffer[] = []
-      for await (const chunk of req) chunks.push(chunk)
-      body = JSON.parse(Buffer.concat(chunks).toString())
-    }
-
-    // Convert Node.js headers to Headers object
-    const headers = new Headers()
-    for (const [key, value] of Object.entries(req.headers)) {
-      if (typeof value === 'string') headers.set(key, value)
-    }
-
-    const result = await channel.handleRequest(method, body, headers)
-
-    res.statusCode = result.status
-    for (const [key, value] of Object.entries(result.headers)) {
-      res.setHeader(key, value)
-    }
-
-    if (result.body instanceof ReadableStream) {
-      Readable.fromWeb(result.body).pipe(res)
-    } else if (result.body) {
-      res.end(result.body)
-    } else {
-      res.end()
-    }
-    return
-  }
-
-  res.statusCode = 404
-  res.end('Not Found')
+const channel = new MCPServerChannel({
+  id: 'mcp-server',
+  serverInfo: { name: 'math-server', version: '1.0.0' },
 })
-
-server.listen(3000)
-```
-  </TabItem>
-</Tabs>
-
-### Supported MCP Methods
-
-| HTTP Method | MCP Method | Description |
-|-------------|------------|-------------|
-| POST | `initialize` | Establish session and exchange capabilities |
-| POST | `notifications/initialized` | Client ready notification |
-| POST | `tools/list` | List available tools (commands) |
-| POST | `tools/call` | Execute a tool (command) |
-| GET | - | Open SSE stream for server-initiated messages |
-| DELETE | - | Terminate session |
-
-### Session Management
-
-When `enableSessions` is `true` (default), the server:
-
-1. Creates a new session on `initialize` request
-2. Returns session ID via `MCP-Session-Id` response header
-3. Expects session ID in subsequent request headers
-4. Cleans up session on DELETE request
-
-```typescript
-// Session ID is returned in the initialize response header
-const initResponse = await fetch('/mcp', {
-  method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({
-    jsonrpc: '2.0',
-    id: 1,
-    method: 'initialize',
-    params: { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'my-client', version: '1.0.0' } }
-  })
-})
-
-const sessionId = initResponse.headers.get('MCP-Session-Id')
-
-// Use session ID in subsequent requests
-const toolsResponse = await fetch('/mcp', {
-  method: 'POST',
-  headers: {
-    'Content-Type': 'application/json',
-    'MCP-Session-Id': sessionId
-  },
-  body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list' })
-})
-```
-
-<Aside type="tip">
-  Set `enableSessions: false` for stateless deployments like Cloudflare Workers where session state is not preserved between requests.
-</Aside>
-
-### SSE Support
-
-The server supports Server-Sent Events (SSE) for responses when the client sends `Accept: text/event-stream` header. This enables streaming responses for long-running tool calls.
-
-## MCPClientChannel
-
-`MCPClientChannel` connects to remote MCP servers and exposes their tools as cmd-ipc commands.
-
-### Configuration
-
-```typescript
-import { MCPClientChannel } from '@coralstack/cmd-ipc'
-
-const channel = new MCPClientChannel({
-  id: 'mcp-client',
-  baseUrl: 'https://mcp.example.com',
-  endpoint: '/mcp',           // Optional: MCP endpoint path (default: '/mcp')
-  commandPrefix: 'remote',    // Optional: prefix for registered commands
-  timeout: 30000,             // Optional: request timeout in ms (default: 30000)
-  clientInfo: {
-    name: 'my-app',
-    version: '1.0.0',
-  },
-  capabilities: {},           // Optional: requested capabilities
-})
-
-await registry.registerChannel(channel)
-```
-
-### Configuration Options
-
-| Option | Type | Required | Default | Description |
-|--------|------|----------|---------|-------------|
-| `id` | `string` | Yes | - | Unique channel identifier |
-| `baseUrl` | `string` | Yes | - | MCP server URL (e.g., `https://mcp.example.com`) |
-| `endpoint` | `string` | No | `'/mcp'` | MCP endpoint path |
-| `commandPrefix` | `string` | No | - | Prefix added to registered command IDs |
-| `timeout` | `number` | No | `30000` | Request timeout in milliseconds |
-| `clientInfo` | `MCPInfo` | No | `{ name: 'cmd-ipc', version: '1.0.0' }` | Client name and version |
-| `capabilities` | `MCPClientCapabilities` | No | `{}` | Requested capabilities |
-| `protocolVersion` | `string` | No | `'2025-11-25'` | MCP protocol version |
-| `openAuthBrowser` | `function` | No | - | OAuth callback to open browser for authorization |
-| `tokenStorage` | `OAuthTokenStorage` | No | - | OAuth token storage for persistence |
-| `oauthUrlTransformer` | `function` | No | - | Transform OAuth URLs (e.g., for CORS proxy) |
-
-### Command Prefix
-
-The `commandPrefix` option helps organize commands from different sources:
-
-```typescript
-// Without prefix:
-// Remote tool 'calculator' -> local command 'calculator'
-
-// With prefix 'mcp':
-// Remote tool 'calculator' -> local command 'mcp.calculator'
-
-const channel = new MCPClientChannel({
-  id: 'mcp-client',
-  baseUrl: 'https://mcp.example.com',
-  commandPrefix: 'mcp',
-})
-
-// Execute with prefix
-await registry.executeCommand('mcp.calculator', { operation: 'add', a: 5, b: 3 })
-```
-
-### Startup Flow
-
-When `start()` is called on MCPClientChannel:
-
-1. Sends `initialize` request to establish session
-2. Captures session ID from `MCP-Session-Id` header
-3. Sends `notifications/initialized` notification
-4. Calls `tools/list` to discover available tools
-5. Emits `register.command.request` for each tool (with optional prefix)
-
-```typescript
-const channel = new MCPClientChannel({
-  id: 'mcp-client',
-  baseUrl: 'https://mcp.example.com',
-  commandPrefix: 'remote',
-})
-
 await registry.registerChannel(channel)
 
-// After start(), remote tools are available as commands
-const result = await registry.executeCommand('remote.some-tool', { input: 'value' })
+const transport = new StdioServerTransport()
+await channel.connectTransport(transport)
 ```
 
-### Accessing Server Information
+### HTTP Server (Express)
 
-After initialization, you can access server information:
-
-```typescript
-const channel = new MCPClientChannel({ /* config */ })
-await registry.registerChannel(channel)
-
-console.log(channel.serverInfo)        // { name: 'server-name', version: '1.0.0' }
-console.log(channel.serverCapabilities) // { tools: { listChanged: true } }
-console.log(channel.sessionId)          // 'uuid-session-id'
-console.log(channel.protocolVersion)    // '2025-11-25'
-```
-
-## Complete Example
-
-Here's a complete example showing both server and client channels:
-
-### Server (Cloudflare Worker)
+For HTTP-based MCP servers, use the SDK's `StreamableHTTPServerTransport`. Each transport instance handles one session, so you create a new transport (and channel) per session:
 
 ```typescript
-import { CommandRegistry, MCPServerChannel, Command, registerCommands } from '@coralstack/cmd-ipc'
+import express from 'express'
+import { randomUUID } from 'crypto'
+import { CommandRegistry, Command, registerCommands } from '@coralstack/cmd-ipc'
+import { MCPServerChannel } from '@coralstack/cmd-ipc-mcp'
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
 
 // Define commands
 class MathCommands {
   @Command('math.add', 'Add two numbers')
-  add({ a, b }: { a: number; b: number }): number {
+  add({ a, b }: { a: number; b: number }) {
+    return a + b
+  }
+}
+
+// Setup registry
+const registry = new CommandRegistry({ id: 'server' })
+registerCommands([new MathCommands()], registry)
+
+// Track active sessions
+const sessions = new Map<string, {
+  transport: StreamableHTTPServerTransport
+  channel: MCPServerChannel
+}>()
+
+const app = express()
+app.use(express.json())
+
+// Handle POST (initialize, tools/list, tools/call)
+app.post('/mcp', async (req, res) => {
+  const sessionId = req.headers['mcp-session-id'] as string | undefined
+
+  // Route to existing session
+  if (sessionId && sessions.has(sessionId)) {
+    await sessions.get(sessionId)!.transport.handleRequest(req, res, req.body)
+    return
+  }
+
+  // New session
+  const transport = new StreamableHTTPServerTransport({
+    sessionIdGenerator: () => randomUUID(),
+  })
+
+  const channel = new MCPServerChannel({
+    id: `mcp-session-${randomUUID()}`,
+    serverInfo: { name: 'math-server', version: '1.0.0' },
+  })
+
+  await registry.registerChannel(channel)
+  await channel.connectTransport(transport)
+
+  transport.onSessionInitialized = (sid) => {
+    sessions.set(sid, { transport, channel })
+  }
+
+  await transport.handleRequest(req, res, req.body)
+})
+
+// Handle GET (SSE stream for server-initiated messages)
+app.get('/mcp', async (req, res) => {
+  const sessionId = req.headers['mcp-session-id'] as string | undefined
+  if (sessionId && sessions.has(sessionId)) {
+    await sessions.get(sessionId)!.transport.handleRequest(req, res)
+  } else {
+    res.status(400).end('Session not found')
+  }
+})
+
+// Handle DELETE (terminate session)
+app.delete('/mcp', async (req, res) => {
+  const sessionId = req.headers['mcp-session-id'] as string | undefined
+  if (sessionId && sessions.has(sessionId)) {
+    const session = sessions.get(sessionId)!
+    await session.transport.handleRequest(req, res)
+    await session.channel.close()
+    sessions.delete(sessionId)
+  } else {
+    res.status(400).end('Session not found')
+  }
+})
+
+app.listen(3000, () => console.log('MCP server running on port 3000'))
+```
+
+<Aside type="tip">
+  For stateless deployments (e.g., Cloudflare Workers), pass `sessionIdGenerator: undefined` to `StreamableHTTPServerTransport` to disable session management.
+</Aside>
+
+### Accessing the SDK McpServer
+
+For advanced use cases, access the underlying SDK `McpServer` directly:
+
+```typescript
+const mcpServer = channel.server // McpServer instance from @modelcontextprotocol/sdk
+```
+
+## MCPClientChannel
+
+`MCPClientChannel` connects to a remote MCP server, discovers its tools, and registers them as cmd-ipc commands. Once connected, you can execute remote MCP tools using the cmd-ipc `CommandRegistry` like any other command.
+
+### Configuration
+
+```typescript
+import { MCPClientChannel } from '@coralstack/cmd-ipc-mcp'
+
+const channel = new MCPClientChannel({
+  id: 'mcp-client',
+  transport,                   // SDK Transport instance
+  commandPrefix: 'remote',    // Optional: prefix for registered commands
+  timeout: 30000,              // Optional: request timeout in ms
+  clientInfo: {                // Optional: client name/version
+    name: 'my-app',
+    version: '1.0.0',
+  },
+})
+```
+
+| Option | Type | Required | Default | Description |
+|--------|------|----------|---------|-------------|
+| `id` | `string` | Yes | — | Unique channel identifier |
+| `transport` | `Transport` | Yes | — | SDK Transport instance (e.g., `StreamableHTTPClientTransport`, `StdioClientTransport`) |
+| `commandPrefix` | `string` | No | — | Prefix added to registered command IDs (e.g., `remote.toolName`) |
+| `timeout` | `number` | No | `30000` | Request timeout in milliseconds |
+| `clientInfo` | `Implementation` | No | `{ name: 'cmd-ipc', version: '1.0.0' }` | Client name and version sent to MCP server |
+
+### Command Prefix
+
+The `commandPrefix` option helps organize commands from multiple MCP servers:
+
+```typescript
+// Without prefix: remote tool 'calculator' → command 'calculator'
+// With prefix 'stripe': remote tool 'create_invoice' → command 'stripe.create_invoice'
+
+const channel = new MCPClientChannel({
+  id: 'stripe-mcp',
+  transport,
+  commandPrefix: 'stripe',
+})
+
+await registry.registerChannel(channel)
+await registry.executeCommand('stripe.create_invoice', { amount: 1000 })
+```
+
+### Startup Flow
+
+When the channel is registered (which calls `start()`):
+
+1. Creates an SDK `Client` and connects via the provided transport
+2. The SDK performs the MCP handshake (`initialize` / `initialized`)
+3. Calls `client.listTools()` to discover available tools
+4. Emits `register.command.request` for each tool (with optional prefix)
+
+After startup, all discovered tools are available as commands in the registry.
+
+### Connecting Without OAuth
+
+For MCP servers that don't require authentication:
+
+<Tabs>
+  <TabItem label="HTTP">
+```typescript
+import { CommandRegistry } from '@coralstack/cmd-ipc'
+import { MCPClientChannel } from '@coralstack/cmd-ipc-mcp'
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
+
+const registry = new CommandRegistry({ id: 'client' })
+
+const transport = new StreamableHTTPClientTransport(
+  new URL('https://mcp.example.com/mcp')
+)
+
+const channel = new MCPClientChannel({
+  id: 'example-mcp',
+  transport,
+  commandPrefix: 'example',
+})
+
+await registry.registerChannel(channel)
+
+// Execute remote tools as local commands
+const result = await registry.executeCommand('example.some-tool', { input: 'value' })
+```
+  </TabItem>
+  <TabItem label="Stdio">
+```typescript
+import { CommandRegistry } from '@coralstack/cmd-ipc'
+import { MCPClientChannel } from '@coralstack/cmd-ipc-mcp'
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
+
+const registry = new CommandRegistry({ id: 'client' })
+
+const transport = new StdioClientTransport({
+  command: 'npx',
+  args: ['-y', '@some-org/mcp-server'],
+})
+
+const channel = new MCPClientChannel({
+  id: 'local-mcp',
+  transport,
+  commandPrefix: 'local',
+})
+
+await registry.registerChannel(channel)
+
+const result = await registry.executeCommand('local.some-tool', { input: 'value' })
+```
+  </TabItem>
+</Tabs>
+
+### Accessing Server Information
+
+After connection, you can inspect the remote server:
+
+```typescript
+await registry.registerChannel(channel)
+
+console.log(channel.serverInfo)         // { name: 'server-name', version: '1.0.0' }
+console.log(channel.serverCapabilities) // { tools: { listChanged: true } }
+console.log(channel.client)             // SDK Client instance (for advanced usage)
+```
+
+## OAuth Authentication
+
+OAuth is handled at the **transport level** by the SDK — not by the cmd-ipc channels. When an MCP server requires authentication, you configure an `authProvider` on the `StreamableHTTPClientTransport`. The SDK handles the full OAuth 2.1 flow: metadata discovery, dynamic client registration, PKCE, token exchange, and refresh.
+
+### How OAuth Works
+
+1. The transport sends a request to the MCP server
+2. The server responds with `401 Unauthorized`
+3. The SDK discovers the authorization server via <a href="https://www.rfc-editor.org/rfc/rfc9728" target="_blank" rel="noopener">Protected Resource Metadata (RFC 9728)</a>
+4. The `authProvider.redirectToAuthorization()` callback is called with the authorization URL
+5. After user authorization, the code is exchanged for tokens
+6. The transport retries the original request with the access token
+
+### Node.js OAuth Example
+
+For Node.js applications, implement the SDK's `OAuthClientProvider` interface:
+
+```typescript
+import { CommandRegistry } from '@coralstack/cmd-ipc'
+import { MCPClientChannel } from '@coralstack/cmd-ipc-mcp'
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
+import type { OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.js'
+
+// Implement the SDK's OAuthClientProvider interface
+const authProvider: OAuthClientProvider = {
+  get redirectUrl() {
+    return 'http://localhost:3000/oauth/callback'
+  },
+
+  get clientMetadata() {
+    return {
+      client_name: 'my-app',
+      redirect_uris: ['http://localhost:3000/oauth/callback'],
+      grant_types: ['authorization_code', 'refresh_token'],
+      response_types: ['code'],
+      token_endpoint_auth_method: 'none',
+    }
+  },
+
+  // Store and retrieve client registration info
+  clientInformation: async () => loadFromStorage('client-info'),
+  saveClientInformation: async (info) => saveToStorage('client-info', info),
+
+  // Store and retrieve OAuth tokens
+  tokens: async () => loadFromStorage('tokens'),
+  saveTokens: async (tokens) => saveToStorage('tokens', tokens),
+
+  // Called when user needs to authorize — open browser
+  redirectToAuthorization: async (authorizationUrl) => {
+    const { default: open } = await import('open')
+    await open(authorizationUrl.toString())
+  },
+
+  // PKCE code verifier storage
+  saveCodeVerifier: async (verifier) => saveToStorage('verifier', verifier),
+  codeVerifier: async () => loadFromStorage('verifier'),
+}
+
+const transport = new StreamableHTTPClientTransport(
+  new URL('https://mcp.example.com/mcp'),
+  { authProvider }
+)
+
+const channel = new MCPClientChannel({
+  id: 'secure-mcp',
+  transport,
+  commandPrefix: 'secure',
+})
+
+const registry = new CommandRegistry({ id: 'client' })
+await registry.registerChannel(channel)
+
+// Tools are available after OAuth completes
+const result = await registry.executeCommand('secure.protected-tool', { input: 'value' })
+```
+
+### Browser OAuth Example
+
+For browser-based applications, use a popup window for authorization and a CORS proxy for cross-origin requests:
+
+```typescript
+import { CommandRegistry } from '@coralstack/cmd-ipc'
+import { MCPClientChannel } from '@coralstack/cmd-ipc-mcp'
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
+import type { OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.js'
+
+class BrowserOAuthProvider implements OAuthClientProvider {
+  private serverUrl: string
+
+  constructor(serverUrl: string) {
+    this.serverUrl = serverUrl
+  }
+
+  get redirectUrl() {
+    return `${window.location.origin}/oauth/callback`
+  }
+
+  get clientMetadata() {
+    return {
+      client_name: 'my-web-app',
+      redirect_uris: [this.redirectUrl],
+      grant_types: ['authorization_code', 'refresh_token'],
+      response_types: ['code'],
+      token_endpoint_auth_method: 'none',
+    }
+  }
+
+  async clientInformation() {
+    const stored = localStorage.getItem(`mcp-oauth-client:${this.serverUrl}`)
+    return stored ? JSON.parse(stored) : undefined
+  }
+
+  async saveClientInformation(info: unknown) {
+    localStorage.setItem(`mcp-oauth-client:${this.serverUrl}`, JSON.stringify(info))
+  }
+
+  async tokens() {
+    const stored = localStorage.getItem(`mcp-oauth-tokens:${this.serverUrl}`)
+    return stored ? JSON.parse(stored) : undefined
+  }
+
+  async saveTokens(tokens: unknown) {
+    localStorage.setItem(`mcp-oauth-tokens:${this.serverUrl}`, JSON.stringify(tokens))
+  }
+
+  async redirectToAuthorization(authorizationUrl: URL) {
+    // Open OAuth in a popup window
+    const width = 600, height = 700
+    const left = window.screenX + (window.outerWidth - width) / 2
+    const top = window.screenY + (window.outerHeight - height) / 2
+    window.open(
+      authorizationUrl.toString(),
+      'oauth',
+      `width=${width},height=${height},left=${left},top=${top},popup=1`
+    )
+  }
+
+  async saveCodeVerifier(verifier: string) {
+    localStorage.setItem(`mcp-oauth-verifier:${this.serverUrl}`, verifier)
+  }
+
+  async codeVerifier() {
+    return localStorage.getItem(`mcp-oauth-verifier:${this.serverUrl}`) ?? ''
+  }
+}
+
+// Create transport with auth provider
+const serverUrl = 'https://mcp.example.com'
+const authProvider = new BrowserOAuthProvider(serverUrl)
+
+const transport = new StreamableHTTPClientTransport(
+  new URL(`${serverUrl}/mcp`),
+  { authProvider }
+)
+
+const channel = new MCPClientChannel({
+  id: 'browser-mcp',
+  transport,
+  commandPrefix: 'remote',
+})
+
+const registry = new CommandRegistry({ id: 'browser-client' })
+await registry.registerChannel(channel)
+```
+
+In your OAuth callback page (e.g., `/oauth/callback`):
+
+```typescript
+// Parse the authorization code from the URL
+const params = new URLSearchParams(window.location.search)
+const code = params.get('code')
+const error = params.get('error')
+
+// Send the code back to the opener window
+if (window.opener) {
+  window.opener.postMessage(
+    { type: 'oauth-callback', code, error },
+    window.location.origin
+  )
+  window.close()
+}
+```
+
+<Aside type="tip">
+  When connecting to external MCP servers from a browser, you'll need a CORS proxy to avoid cross-origin restrictions. Route requests through your server (e.g., `/mcp-proxy/https/mcp.example.com/mcp`) and point the transport at the proxy URL instead. See the `examples/agent-mcp/` example for a complete implementation with a Vite dev server CORS proxy.
+</Aside>
+
+## Complete Example
+
+A full end-to-end example with an Express server exposing commands and a Node.js client connecting to it.
+
+### Server
+
+```typescript
+import express from 'express'
+import { randomUUID } from 'crypto'
+import { CommandRegistry, Command, registerCommands } from '@coralstack/cmd-ipc'
+import { MCPServerChannel } from '@coralstack/cmd-ipc-mcp'
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
+
+class MathCommands {
+  @Command('math.add', 'Add two numbers')
+  add({ a, b }: { a: number; b: number }) {
     return a + b
   }
 
   @Command('math.multiply', 'Multiply two numbers')
-  multiply({ a, b }: { a: number; b: number }): number {
+  multiply({ a, b }: { a: number; b: number }) {
     return a * b
   }
 }
 
-// Setup
-let registry: CommandRegistry | null = null
-let channel: MCPServerChannel | null = null
+const registry = new CommandRegistry({ id: 'math-server' })
+registerCommands([new MathCommands()], registry)
 
-async function getRegistry() {
-  if (!registry) {
-    registry = new CommandRegistry({ id: 'worker' })
-    registerCommands([new MathCommands()], registry)
+const sessions = new Map<string, {
+  transport: StreamableHTTPServerTransport
+  channel: MCPServerChannel
+}>()
 
-    channel = new MCPServerChannel({
-      id: 'mcp-server',
-      serverInfo: { name: 'math-server', version: '1.0.0' },
-      capabilities: { tools: {} },
-    })
+const app = express()
+app.use(express.json())
 
-    await registry.registerChannel(channel)
+app.post('/mcp', async (req, res) => {
+  const sessionId = req.headers['mcp-session-id'] as string | undefined
+
+  if (sessionId && sessions.has(sessionId)) {
+    await sessions.get(sessionId)!.transport.handleRequest(req, res, req.body)
+    return
   }
-  return { registry, channel: channel! }
-}
 
-export default {
-  async fetch(request: Request): Promise<Response> {
-    const url = new URL(request.url)
-    const { channel } = await getRegistry()
+  const transport = new StreamableHTTPServerTransport({
+    sessionIdGenerator: () => randomUUID(),
+  })
 
-    if (url.pathname === '/mcp') {
-      const method = request.method as 'GET' | 'POST' | 'DELETE'
-      const body = method === 'POST' ? await request.json() : undefined
+  const channel = new MCPServerChannel({
+    id: `mcp-session-${randomUUID()}`,
+    serverInfo: { name: 'math-server', version: '1.0.0' },
+  })
 
-      const result = await channel.handleRequest(method, body, request.headers)
+  await registry.registerChannel(channel)
+  await channel.connectTransport(transport)
 
-      return new Response(result.body, {
-        status: result.status,
-        headers: result.headers,
-      })
-    }
-
-    return new Response('Not Found', { status: 404 })
+  transport.onSessionInitialized = (sid) => {
+    sessions.set(sid, { transport, channel })
   }
-}
+
+  await transport.handleRequest(req, res, req.body)
+})
+
+app.get('/mcp', async (req, res) => {
+  const sessionId = req.headers['mcp-session-id'] as string | undefined
+  if (sessionId && sessions.has(sessionId)) {
+    await sessions.get(sessionId)!.transport.handleRequest(req, res)
+  } else {
+    res.status(400).end('Session not found')
+  }
+})
+
+app.delete('/mcp', async (req, res) => {
+  const sessionId = req.headers['mcp-session-id'] as string | undefined
+  if (sessionId && sessions.has(sessionId)) {
+    const session = sessions.get(sessionId)!
+    await session.transport.handleRequest(req, res)
+    await session.channel.close()
+    sessions.delete(sessionId)
+  } else {
+    res.status(400).end('Session not found')
+  }
+})
+
+app.listen(3000, () => console.log('MCP server on http://localhost:3000'))
 ```
 
-### Client (Node.js)
+### Client
 
 ```typescript
-import { CommandRegistry, MCPClientChannel } from '@coralstack/cmd-ipc'
+import { CommandRegistry } from '@coralstack/cmd-ipc'
+import { MCPClientChannel } from '@coralstack/cmd-ipc-mcp'
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 
 const registry = new CommandRegistry({ id: 'client' })
 
+const transport = new StreamableHTTPClientTransport(
+  new URL('http://localhost:3000/mcp')
+)
+
 const channel = new MCPClientChannel({
-  id: 'mcp-client',
-  baseUrl: 'https://math-server.example.com',
+  id: 'math-client',
+  transport,
   commandPrefix: 'math',
 })
 
 await registry.registerChannel(channel)
 
-// Now you can execute remote MCP tools as commands
 const sum = await registry.executeCommand('math.math.add', { a: 5, b: 3 })
 console.log(sum) // 8
 
@@ -417,86 +624,17 @@ const product = await registry.executeCommand('math.math.multiply', { a: 4, b: 7
 console.log(product) // 28
 ```
 
-## JSON-RPC 2.0 Utilities
-
-MCPChannel exports utilities for working with JSON-RPC 2.0 messages:
-
-```typescript
-import {
-  createRequest,
-  createResponse,
-  createNotification,
-  createError,
-  createErrorResponse,
-  generateRequestId,
-  isRequest,
-  isResponse,
-  isNotification,
-  isErrorResponse,
-  isJSONRPCMessage,
-  validateJSONRPCMessage,
-  JSONRPC_ERRORS,
-} from '@coralstack/cmd-ipc'
-
-// Create a request
-const request = createRequest(1, 'tools/list')
-// { jsonrpc: '2.0', id: 1, method: 'tools/list' }
-
-// Create a response
-const response = createResponse(1, { tools: [] })
-// { jsonrpc: '2.0', id: 1, result: { tools: [] } }
-
-// Create an error response
-const error = createErrorResponse(1, createError(JSONRPC_ERRORS.METHOD_NOT_FOUND, 'Unknown method'))
-// { jsonrpc: '2.0', id: 1, error: { code: -32601, message: 'Unknown method' } }
-```
-
-## SSE Utilities
-
-For working with Server-Sent Events:
-
-```typescript
-import {
-  createSSEStream,
-  parseSSEStream,
-  prefersSSE,
-  SSE_CONTENT_TYPE,
-} from '@coralstack/cmd-ipc'
-
-// Check if client prefers SSE
-if (prefersSSE(request.headers.get('Accept'))) {
-  const { stream, writer } = createSSEStream()
-
-  // Write messages to the stream
-  writer.writeMessage({ jsonrpc: '2.0', id: 1, result: { data: 'value' } })
-  writer.close()
-
-  return new Response(stream, {
-    headers: { 'Content-Type': SSE_CONTENT_TYPE }
-  })
-}
-
-// Parse an SSE stream
-for await (const event of parseSSEStream(response.body)) {
-  console.log(event.data) // The event data
-}
-```
+<Aside type="note">
+  The command ID `math.math.add` has the prefix `math` (from `commandPrefix`) followed by the tool name `math.add` (the command ID registered on the server). If you don't set a `commandPrefix`, the command ID would just be `math.add`.
+</Aside>
 
 ## Common Issues
-
-### Session Not Found
-
-If you receive "Session not found" errors:
-
-1. Ensure you're passing the `MCP-Session-Id` header from the initialize response
-2. Check that sessions are enabled on the server (`enableSessions: true`)
-3. For stateless environments, consider disabling sessions
 
 ### Tool Not Found
 
 If commands aren't being exposed as tools:
 
-1. Ensure commands are registered before the channel starts
+1. Ensure commands are registered with the `CommandRegistry` **before** MCP clients call `tools/list`
 2. Private commands (prefixed with `_`) are automatically filtered out
 3. Check that the command has a valid ID and description
 
@@ -504,191 +642,14 @@ If commands aren't being exposed as tools:
 
 If connections timeout:
 
-1. Increase the `timeout` configuration option
+1. Increase the `timeout` configuration option on the channel
 2. Check network connectivity to the MCP server
-3. Verify the `baseUrl` and `endpoint` are correct
+3. Verify the transport URL is correct
 
-## OAuth Authentication
+### Session Not Found (HTTP Server)
 
-MCPClientChannel supports OAuth 2.1 authentication for connecting to protected MCP servers. The implementation follows the <a href="https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization" target="_blank" rel="noopener">MCP OAuth specification</a>.
+If you receive "Session not found" errors with the HTTP server:
 
-### OAuth Configuration
-
-```typescript
-import { MCPClientChannel } from '@coralstack/cmd-ipc'
-
-const channel = new MCPClientChannel({
-  id: 'secure-mcp',
-  baseUrl: 'https://mcp.example.com',
-
-  // OAuth: Callback to open browser for authorization
-  openAuthBrowser: async (authUrl: string) => {
-    // Open popup or redirect user to authUrl
-    // Return the authorization code from the callback
-    return openOAuthPopup(authUrl)
-  },
-
-  // OAuth: Optional token storage for persistence
-  tokenStorage: {
-    async get(serverUrl: string) {
-      return localStorage.getItem(`oauth-tokens:${serverUrl}`)
-    },
-    async set(serverUrl: string, tokens) {
-      localStorage.setItem(`oauth-tokens:${serverUrl}`, JSON.stringify(tokens))
-    },
-    async clear(serverUrl: string) {
-      localStorage.removeItem(`oauth-tokens:${serverUrl}`)
-    }
-  },
-
-  // OAuth: Optional URL transformer (useful for CORS proxies)
-  oauthUrlTransformer: (url: string) => {
-    // Transform OAuth URLs if needed (e.g., through a CORS proxy)
-    return url
-  },
-})
-```
-
-### OAuth Configuration Options
-
-| Option | Type | Required | Description |
-|--------|------|----------|-------------|
-| `openAuthBrowser` | `(url: string) => Promise<string>` | No | Callback to open browser for authorization and return the auth code |
-| `tokenStorage` | `OAuthTokenStorage` | No | Storage for persisting tokens across sessions |
-| `oauthUrlTransformer` | `(url: string) => string` | No | Transform OAuth URLs (e.g., for CORS proxy) |
-
-### How OAuth Works
-
-When connecting to an MCP server that requires authentication:
-
-1. **Initial Request**: The channel sends a request to the MCP server
-2. **401 Response**: Server responds with `401 Unauthorized` and a `WWW-Authenticate` header containing the resource metadata URL
-3. **Metadata Discovery**: The channel fetches:
-   - Protected Resource Metadata (RFC 9728) to find authorization servers
-   - Authorization Server Metadata (RFC 8414) or falls back to default endpoints
-4. **Dynamic Client Registration**: If supported, registers the client dynamically (RFC 7591)
-5. **Authorization**: Opens browser for user authorization using PKCE (S256)
-6. **Token Exchange**: Exchanges authorization code for tokens
-7. **Retry Request**: Retries the original request with the access token
-
-### Browser OAuth Flow Example
-
-For browser-based applications, you can use a popup window for OAuth:
-
-```typescript
-// oauth-popup.ts
-export function openOAuthPopup(authUrl: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    // Open popup window
-    const popup = window.open(
-      authUrl,
-      'oauth',
-      'width=600,height=700,popup=1'
-    )
-
-    if (!popup) {
-      reject(new Error('Popup blocked'))
-      return
-    }
-
-    // Listen for OAuth callback via postMessage
-    const handleMessage = (event: MessageEvent) => {
-      if (event.data?.type === 'oauth-callback') {
-        window.removeEventListener('message', handleMessage)
-        popup.close()
-
-        if (event.data.code) {
-          resolve(event.data.code)
-        } else {
-          reject(new Error(event.data.error || 'OAuth failed'))
-        }
-      }
-    }
-
-    window.addEventListener('message', handleMessage)
-  })
-}
-
-// In your callback page (e.g., /oauth/callback)
-const params = new URLSearchParams(window.location.search)
-const code = params.get('code')
-const error = params.get('error')
-
-if (window.opener) {
-  window.opener.postMessage({
-    type: 'oauth-callback',
-    code,
-    error,
-  }, window.location.origin)
-  window.close()
-}
-```
-
-### Token Storage
-
-For persistent OAuth tokens, implement the `OAuthTokenStorage` interface:
-
-```typescript
-interface OAuthTokenStorage {
-  get(serverUrl: string): Promise<OAuthTokens | null>
-  set(serverUrl: string, tokens: OAuthTokens): Promise<void>
-  clear(serverUrl: string): Promise<void>
-}
-
-interface OAuthTokens {
-  access_token: string
-  token_type: string
-  expires_in?: number
-  refresh_token?: string
-  scope?: string
-}
-```
-
-### CORS Proxy for Browser
-
-When connecting to external MCP servers from a browser, you may need a CORS proxy. Use `oauthUrlTransformer` to route OAuth requests through your proxy:
-
-```typescript
-const channel = new MCPClientChannel({
-  id: 'mcp-client',
-  baseUrl: '/proxy/https/mcp.example.com',  // Proxied URL
-
-  oauthUrlTransformer: (url: string) => {
-    // Route OAuth URLs through the same proxy
-    const parsed = new URL(url)
-    return `/proxy/${parsed.protocol.replace(':', '')}/${parsed.host}${parsed.pathname}${parsed.search}`
-  },
-})
-```
-
-### OAuth Handler
-
-For advanced use cases, you can use `MCPOAuthHandler` directly:
-
-```typescript
-import { MCPOAuthHandler } from '@coralstack/cmd-ipc'
-
-const oauthHandler = new MCPOAuthHandler(
-  'https://mcp.example.com',  // Server URL
-  openAuthBrowser,             // Browser callback
-  tokenStorage,                // Optional token storage
-  'my-app',                    // Client name for registration
-  'http://localhost:3000/callback', // Redirect URI
-  urlTransformer,              // Optional URL transformer
-)
-
-// Check if we have valid tokens
-if (oauthHandler.hasValidTokens()) {
-  const authHeader = oauthHandler.getAuthorizationHeader()
-  // Use authHeader in requests
-}
-
-// Handle 401 response
-const success = await oauthHandler.handleUnauthorized(response)
-
-// Refresh tokens
-const refreshed = await oauthHandler.refreshTokens()
-
-// Clear tokens (logout)
-await oauthHandler.clearTokens()
-```
+1. Ensure you're passing the `MCP-Session-Id` header from the initialize response in subsequent requests
+2. Check that your session storage map is persisting correctly
+3. For stateless deployments, pass `sessionIdGenerator: undefined` to `StreamableHTTPServerTransport`

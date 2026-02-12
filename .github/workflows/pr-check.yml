@@ -26,7 +26,7 @@ jobs:
         run: yarn build && yarn workspace @examples/electron-core build
 
       - name: Type checks
-        run: yarn typecheck:all
+        run: yarn typecheck
 
       - name: Lint
         run: yarn lint

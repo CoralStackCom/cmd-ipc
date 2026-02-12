@@ -10,7 +10,7 @@ export default defineConfig({
   resolve: {
     alias: {
       // Force ESM resolution for workspace package
-      '@coralstack/cmd-ipc': `${__dirname}../../../../dist/index.mjs`,
+      '@coralstack/cmd-ipc': `${__dirname}../../../../packages/cmd-ipc/dist/index.mjs`,
     },
   },
   optimizeDeps: {

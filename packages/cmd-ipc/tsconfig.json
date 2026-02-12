@@ -16,5 +16,6 @@
     "emitDecoratorMetadata": true,
     "types": ["vitest/globals", "node"]
   },
-  "exclude": ["dist", "node_modules", "examples", "packages"]
+  "include": ["src/**/*"],
+  "exclude": ["dist", "node_modules"]
 }

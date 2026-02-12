@@ -1,0 +1,48 @@
+{
+  "name": "@coralstack/cmd-ipc-mcp",
+  "version": "0.0.1",
+  "description": "MCP (Model Context Protocol) channel implementation for @coralstack/cmd-ipc",
+  "keywords": [],
+  "author": {
+    "name": "Angelfish Software LLC",
+    "email": "support@coralstack.com"
+  },
+  "license": "MIT",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20.18.2"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.26.0"
+  },
+  "peerDependencies": {
+    "@coralstack/cmd-ipc": "workspace:*"
+  },
+  "devDependencies": {
+    "@coralstack/cmd-ipc": "workspace:*",
+    "@types/node": "*",
+    "tsup": "^8.5.1",
+    "typescript": "*",
+    "vitest": "*"
+  }
+}

@@ -22,8 +22,9 @@ export default defineConfig({
   ],
   resolve: {
     alias: {
-      // Force ESM resolution for workspace package (fixes worker bundling)
-      '@coralstack/cmd-ipc': `${__dirname}../../dist/index.mjs`,
+      // Force ESM resolution for workspace packages (fixes worker bundling)
+      '@coralstack/cmd-ipc': `${__dirname}../../packages/cmd-ipc/dist/index.mjs`,
+      '@coralstack/cmd-ipc-mcp': `${__dirname}../../packages/cmd-ipc-mcp/dist/index.mjs`,
     },
   },
   optimizeDeps: {

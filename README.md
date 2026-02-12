@@ -2,7 +2,7 @@
 
 A type-safe Inter-Process Communication (IPC) library for running commands across multiple processes and services.
 
-**[📖 Full Documentation](https://coralstack.com/cmd-ipc/)**
+**[Full Documentation](https://coralstack.com/cmd-ipc/)**
 
 ## Overview
 
@@ -15,15 +15,18 @@ Command IPC allows you to register and execute commands across processes with au
 - MCP tool exposure to AI agents
 - Cloud-seamless applications
 
-## Installation
+## Packages
+
+| Package                                             | Description                                              |
+| --------------------------------------------------- | -------------------------------------------------------- |
+| [`@coralstack/cmd-ipc`](./packages/cmd-ipc)         | Core IPC library - registry, channels, commands, schemas |
+| [`@coralstack/cmd-ipc-mcp`](./packages/cmd-ipc-mcp) | MCP channel - connect to and expose MCP servers          |
+
+## Quick Start
 
 ```bash
 npm install @coralstack/cmd-ipc
-# or
-yarn add @coralstack/cmd-ipc
 ```
-
-## Quick Start
 
 ```typescript
 import { CommandRegistry } from '@coralstack/cmd-ipc'
@@ -63,7 +66,7 @@ See the [Quick Start Guide](https://coralstack.com/cmd-ipc/getting-started/quick
 ```bash
 nvm use           # Use Node.js version from .nvmrc
 yarn              # Install dependencies
-yarn build        # Build the library
+yarn build        # Build library packages
 ```
 
 ### Testing
@@ -76,26 +79,37 @@ yarn test:ui      # Run tests with Vitest UI
 
 ### Publishing to NPM
 
-A Github action is configured to push new releases of the library to NPM when a new version/tag is added:
+A GitHub action publishes both packages to npm when a version tag is pushed:
 
 ```bash
-# Create and push a release
-# npm version patch # 1.0.0 → 1.0.1
-# npm version minor # 1.0.0 → 1.1.0
-# npm version major # 1.0.0 → 2.0.0
-npm version patch   # bumps version and creates tag
-git push origin main --tags
+yarn release 1.0.0          # Sets version in both packages, commits, and tags
+git push && git push origin v1.0.0  # Triggers the publish workflow
 ```
 
 ### Other Commands
 
 ```bash
-yarn typecheck            # TypeScript type checking only for main library
-yarn typecheck:all        # TypeScript type checking for all workspaces including examples
+yarn typecheck            # TypeScript type checking for all workspaces
 yarn format               # Format and lint code
 yarn lint                 # ESLint only
 yarn prettify             # Prettier only
 yarn docs:dev             # Run docs site locally
+```
+
+## Project Structure
+
+```
+cmd-ipc/
+├── packages/
+│   ├── cmd-ipc/          # Core library (@coralstack/cmd-ipc)
+│   └── cmd-ipc-mcp/      # MCP channel (@coralstack/cmd-ipc-mcp)
+├── examples/
+│   ├── web-workers/       # Web Workers example
+│   ├── electron/          # Electron example
+│   ├── agent-mcp/         # AI Agent MCP example
+│   └── cf-worker/         # Cloudflare Workers example
+├── docs/                  # Documentation site
+└── scripts/               # Build and release scripts
 ```
 
 ## License

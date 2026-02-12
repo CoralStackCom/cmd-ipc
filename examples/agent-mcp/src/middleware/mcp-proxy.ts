@@ -43,7 +43,7 @@ export function mcpProxyMiddleware(): Connect.NextHandleFunction {
 
     // Parse the URL: /mcp-proxy/{protocol}/{host}/{path...}
     // Path is optional - some MCP servers use root path (e.g., https://mcp.stripe.com)
-    const match = req.url.match(/^\/mcp-proxy\/(https?)\/([\w.-]+)(\/.*)?$/)
+    const match = req.url.match(/^\/mcp-proxy\/(https?)\/([\w.:-]+)(\/.*)?$/)
     if (!match) {
       // eslint-disable-next-line no-console
       console.log('[MCP Proxy] URL did not match pattern:', req.url)
@@ -71,7 +71,17 @@ export function mcpProxyMiddleware(): Connect.NextHandleFunction {
         // Forward headers, excluding host-specific ones
         const headers: Record<string, string> = {}
         for (const [key, value] of Object.entries(req.headers)) {
-          if (value && !['host', 'connection', 'content-length'].includes(key.toLowerCase())) {
+          if (
+            value &&
+            ![
+              'host',
+              'connection',
+              'content-length',
+              'accept-encoding',
+              'if-none-match',
+              'if-modified-since',
+            ].includes(key.toLowerCase())
+          ) {
             headers[key] = Array.isArray(value) ? value.join(', ') : value
           }
         }
@@ -103,9 +113,13 @@ export function mcpProxyMiddleware(): Connect.NextHandleFunction {
         // Copy response headers, adding CORS headers
         res.statusCode = response.status
         response.headers.forEach((value, key) => {
-          // Skip headers that might conflict
+          // Skip headers that might conflict or cause size mismatch
+          // content-length is excluded because fetch() decompresses the body,
+          // so the original content-length (compressed size) would truncate the response
           if (
-            !['content-encoding', 'transfer-encoding', 'connection'].includes(key.toLowerCase())
+            !['content-encoding', 'transfer-encoding', 'content-length', 'connection'].includes(
+              key.toLowerCase(),
+            )
           ) {
             res.setHeader(key, value)
           }

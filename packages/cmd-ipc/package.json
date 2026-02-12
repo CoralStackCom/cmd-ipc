@@ -1,0 +1,53 @@
+{
+  "name": "@coralstack/cmd-ipc",
+  "version": "0.0.1",
+  "description": "A Command IPC framework for multi-process applications and agents",
+  "keywords": [],
+  "author": {
+    "name": "Angelfish Software LLC",
+    "email": "support@coralstack.com"
+  },
+  "license": "MIT",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": "./dist/cli/index.js",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs",
+      "default": "./dist/index.js"
+    },
+    "./testing": {
+      "types": "./dist/testing/index.d.ts",
+      "import": "./dist/testing/index.js",
+      "require": "./dist/testing/index.cjs",
+      "default": "./dist/testing/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20.18.2"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@valibot/to-json-schema": "^1.5.0",
+    "reflect-metadata": "0.2.2",
+    "valibot": "^1.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "*",
+    "tsup": "^8.5.1",
+    "typescript": "*",
+    "vitest": "*"
+  }
+}
