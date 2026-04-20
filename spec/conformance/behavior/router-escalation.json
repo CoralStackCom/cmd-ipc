@@ -1,0 +1,34 @@
+{
+  "description": "A registry configured with routerChannel forwards execute.command.request for unknown commands to its router.",
+  "setup": {
+    "registry": { "id": "worker", "routerChannel": "main" },
+    "peers": [{ "channelId": "main" }]
+  },
+  "steps": [
+    {
+      "direction": "local-call",
+      "trigger": { "executeCommand": ["math.add", { "a": 1, "b": 2 }] }
+    },
+    {
+      "direction": "outbound",
+      "to": "main",
+      "expected": {
+        "id": { "$capture": "execId" },
+        "type": "execute.command.request",
+        "commandId": "math.add",
+        "request": { "a": 1, "b": 2 }
+      }
+    },
+    {
+      "direction": "inbound",
+      "from": "main",
+      "message": {
+        "id": "m-1",
+        "type": "execute.command.response",
+        "thid": { "$ref": "execId" },
+        "response": { "ok": true, "result": 3 }
+      }
+    },
+    { "direction": "local-result", "expected": 3 }
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "description": "execute.command.request with scalar payload round-trips",
+  "schema": "execute.command.request.json",
+  "message": {
+    "id": "22222222-2222-4222-8222-222222222222",
+    "type": "execute.command.request",
+    "commandId": "math.add",
+    "request": { "a": 2, "b": 3 }
+  },
+  "json": "{\"id\":\"22222222-2222-4222-8222-222222222222\",\"type\":\"execute.command.request\",\"commandId\":\"math.add\",\"request\":{\"a\":2,\"b\":3}}"
+}

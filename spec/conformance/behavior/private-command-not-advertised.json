@@ -1,0 +1,49 @@
+{
+  "description": "Commands whose ID begins with '_' are private and MUST NOT appear in any message sent on a channel (register.command.request, list.commands.response).",
+  "setup": {
+    "registry": {
+      "id": "main",
+      "localCommands": [
+        { "id": "math.add",     "returns": { "$expr": "request.a + request.b" } },
+        { "id": "_secret.ping", "returns": "pong" }
+      ]
+    },
+    "peers": [{ "channelId": "worker-1" }]
+  },
+  "steps": [
+    {
+      "direction": "inbound",
+      "from": "worker-1",
+      "message": { "id": "m-1", "type": "list.commands.request" }
+    },
+    {
+      "direction": "outbound",
+      "to": "worker-1",
+      "expected": {
+        "type": "list.commands.response",
+        "thid": "m-1",
+        "commands": [ { "id": "math.add" } ]
+      }
+    },
+    {
+      "description": "Attempting to execute a private command from a remote channel returns not_found.",
+      "direction": "inbound",
+      "from": "worker-1",
+      "message": {
+        "id": "m-2",
+        "type": "execute.command.request",
+        "commandId": "_secret.ping",
+        "request": {}
+      }
+    },
+    {
+      "direction": "outbound",
+      "to": "worker-1",
+      "expected": {
+        "type": "execute.command.response",
+        "thid": "m-2",
+        "response": { "ok": false, "error": { "code": "not_found", "message": { "$match": "any-string" } } }
+      }
+    }
+  ]
+}

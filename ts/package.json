@@ -18,8 +18,6 @@
     "start:examples-web-workers": "yarn workspace @examples/web-workers dev",
     "start:examples-agent-mcp": "yarn workspace @examples/agent-mcp dev",
     "start:examples-cf-worker": "yarn workspace @examples/cf-worker dev",
-    "docs:dev": "yarn workspace @coralstack/cmd-ipc-docs dev",
-    "docs:build": "yarn workspace @coralstack/cmd-ipc-docs build",
     "test": "vitest",
     "test:ui": "vitest --ui",
     "test:run": "vitest run",
@@ -28,7 +26,6 @@
   "workspaces": {
     "packages": [
       "packages/*",
-      "docs",
       "examples/*",
       "examples/electron/packages/*",
       "examples/cf-worker/packages/*"

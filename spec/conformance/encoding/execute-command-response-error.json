@@ -1,0 +1,14 @@
+{
+  "description": "execute.command.response error envelope (not_found) round-trips",
+  "schema": "execute.command.response.json",
+  "message": {
+    "id": "44444444-4444-4444-8444-444444444444",
+    "type": "execute.command.response",
+    "thid": "99999999-9999-4999-8999-999999999999",
+    "response": {
+      "ok": false,
+      "error": { "code": "not_found", "message": "command not registered: does.not.exist" }
+    }
+  },
+  "json": "{\"id\":\"44444444-4444-4444-8444-444444444444\",\"type\":\"execute.command.response\",\"thid\":\"99999999-9999-4999-8999-999999999999\",\"response\":{\"ok\":false,\"error\":{\"code\":\"not_found\",\"message\":\"command not registered: does.not.exist\"}}}"
+}

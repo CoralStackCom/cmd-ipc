@@ -6,37 +6,58 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Command IPC is an Inter-Process Communication (IPC) library for running typed Commands across multiple processes and services. Primary use cases include multi-process applications (Electron.js, Node.js fork, Web Workers), plugin/extension frameworks, MCP tool exposure to AI agents, and cloud-seamless applications.
 
-This is a monorepo with two main packages:
+This is a polyglot monorepo with a TypeScript implementation and a Rust implementation of the same IPC protocol. The canonical protocol definition lives in `spec/`.
 
-- **`@coralstack/cmd-ipc`** (`packages/cmd-ipc/`) - Core IPC library
-- **`@coralstack/cmd-ipc-mcp`** (`packages/cmd-ipc-mcp/`) - MCP (Model Context Protocol) channel implementation using the official `@modelcontextprotocol/sdk`
+Top-level layout:
+
+- **`spec/`** — protocol source of truth (message types, JSON Schemas, conformance vectors). Both implementations MUST conform.
+- **`ts/`** — TypeScript monorepo (Yarn 4 workspaces). Packages:
+  - **`@coralstack/cmd-ipc`** (`ts/packages/cmd-ipc/`) - Core IPC library
+  - **`@coralstack/cmd-ipc-mcp`** (`ts/packages/cmd-ipc-mcp/`) - MCP channel implementation using the official `@modelcontextprotocol/sdk`
+- **`rust/`** — Rust monorepo (Cargo workspace). Crates under `rust/crates/`.
+- **`docs/`** — unified Astro docs site covering both languages.
 
 ## Build & Development Commands
 
-```bash
-yarn                    # Install dependencies
-yarn build              # Build all packages (topological order)
-yarn typecheck          # TypeScript type checking for all workspaces
-yarn typecheck:all      # Same as typecheck
-yarn test               # Run vitest tests
-yarn test:run           # One-time test run (no watch)
-yarn test:ui            # Vitest UI
-yarn format             # Format + lint fix
-yarn lint               # ESLint
-yarn prettify           # Prettier only
-```
-
-**Examples:**
+Top-level orchestration is via `make` from the repo root. `.nvmrc` lives at the root — run `nvm use` (or `fnm`/`asdf` equivalent) once in the repo before running make targets; every TS target runs a `check-node` guard that fails fast if the active Node doesn't match.
 
 ```bash
-yarn start:examples-electron       # Run Electron example
-yarn start:examples-web-workers    # Run Web Workers example
-yarn start:examples-agent-mcp      # Run Agent MCP example
+make install                 # Install all deps (TS + docs)
+make build                   # Build TS + Rust
+make test                    # Run all tests + conformance
+make ready                   # Pre-commit gate: format/lint/typecheck/test for both languages
+
+# TypeScript
+make ts-setup                # Install all TS workspace deps
+make ts-build                # Build all TS packages
+make ts-ready                # TS pre-commit gate (auto-fixes formatting + fixable lint)
+make ts-test                 # Run TS tests headless
+make ts-test UI=1            # Run TS tests with vitest web UI
+make ts-release              # Run the TS release script
+make ts-start-example EXAMPLE=web-workers   # or electron, agent-mcp, cf-worker
+
+# Rust
+make rust-build
+make rust-test
+make rust-lint
+make rust-format
+
+# Docs
+make docs-dev                # Run docs site locally
+make docs-build
 ```
+
+Per-language commands still work inside each subdir (`cd ts && yarn ...`, `cd rust && cargo ...`).
+
+## Release tagging
+
+- `ts-v<x.y.z>` — publishes npm packages
+- `rust-v<x.y.z>` — publishes crates
+- `spec-v<N>` — protocol version bump
 
 ## Architecture
 
-### Core Components (`packages/cmd-ipc/`)
+### Core Components (`ts/packages/cmd-ipc/`)
 
 1. **CommandRegistry** (`src/registry/command-registry.ts`) - Central hub managing commands and channels. Handles routing, message dispatching, and event broadcasting. Supports **Loose Mode** (flexible, any command) and **Strict Mode** (schema-validated with full TypeScript type safety). Uses a Hybrid Tree-Mesh architecture with optional `routerChannel` for command escalation.
 
@@ -52,7 +73,7 @@ yarn start:examples-agent-mcp      # Run Agent MCP example
 
 7. **TTLMap** (`src/utils/ttl-map.ts`) - Generic Map with TTL-based cleanup for request handlers, event deduplication, and route handlers.
 
-### MCP Components (`packages/cmd-ipc-mcp/`)
+### MCP Components (`ts/packages/cmd-ipc-mcp/`)
 
 1. **MCPClientChannel** (`src/client/mcp-client-channel.ts`) - Connects to remote MCP servers, exposes their tools as cmd-ipc commands. Uses the official `@modelcontextprotocol/sdk` `Client`.
 
@@ -60,7 +81,7 @@ yarn start:examples-agent-mcp      # Run Agent MCP example
 
 ### Message Protocol
 
-Seven message types defined in `MessageType` enum (`packages/cmd-ipc/src/registry/command-message-schemas.ts`):
+Seven message types defined in `MessageType` enum (`ts/packages/cmd-ipc/src/registry/command-message-schemas.ts`):
 
 - `register.command.request` / `register.command.response` - Register commands from other processes
 - `list.commands.request` / `list.commands.response` - Query available commands
@@ -124,25 +145,39 @@ const workerRegistry = new CommandRegistry({
 ## Project Structure
 
 ```
-packages/
-├── cmd-ipc/                    # Core IPC library (@coralstack/cmd-ipc)
-│   └── src/
-│       ├── channels/           # ICommandChannel interface, HTTP, MessagePort
-│       ├── commands/           # @Command decorator and registration
-│       ├── registry/           # CommandRegistry core, message types, events
-│       ├── schemas/            # CommandSchemaMap, EventSchemaMap, Valibot utilities
-│       ├── utils/              # TTLMap and other utilities
-│       ├── cli/                # CLI tools (generate-schema)
-│       └── testing/            # Test utilities including TestLogger
-├── cmd-ipc-mcp/                # MCP channel library (@coralstack/cmd-ipc-mcp)
-│   └── src/
-│       ├── client/             # MCPClientChannel (connects to MCP servers)
-│       └── server/             # MCPServerChannel (exposes commands as MCP tools)
-examples/
-├── agent-mcp/                  # AI agent with MCP server connections
-├── web-workers/                # Web Workers example
-├── electron/                   # Electron multi-process example
-└── cf-worker/                  # Cloudflare Worker example
+spec/                           # Protocol source of truth
+├── README.md
+├── messages.md                 # Seven MessageType definitions
+├── schemas/                    # Canonical JSON Schemas
+└── conformance/                # Shared test vectors
+
+ts/                             # TypeScript monorepo (Yarn workspaces)
+├── packages/
+│   ├── cmd-ipc/                # Core IPC library (@coralstack/cmd-ipc)
+│   │   └── src/
+│   │       ├── channels/       # ICommandChannel interface, HTTP, MessagePort
+│   │       ├── commands/       # @Command decorator and registration
+│   │       ├── registry/       # CommandRegistry core, message types, events
+│   │       ├── schemas/        # CommandSchemaMap, EventSchemaMap, Valibot utilities
+│   │       ├── utils/          # TTLMap and other utilities
+│   │       ├── cli/            # CLI tools (generate-schema)
+│   │       └── testing/        # Test utilities including TestLogger
+│   └── cmd-ipc-mcp/            # MCP channel library (@coralstack/cmd-ipc-mcp)
+│       └── src/
+│           ├── client/         # MCPClientChannel
+│           └── server/         # MCPServerChannel
+└── examples/
+    ├── agent-mcp/              # AI agent with MCP server connections
+    ├── web-workers/            # Web Workers example
+    ├── electron/               # Electron multi-process example
+    └── cf-worker/              # Cloudflare Worker example
+
+rust/                           # Rust monorepo (Cargo workspace)
+└── crates/
+    ├── cmd-ipc/                # Core crate (mirrors @coralstack/cmd-ipc)
+    └── cmd-ipc-macros/         # Proc-macros for the @Command equivalent
+
+docs/                           # Unified Astro docs site (both languages)
 ```
 
 ## Configuration Notes

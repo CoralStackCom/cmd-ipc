@@ -1,9 +1,17 @@
-name: PR Check
+name: TypeScript CI
 
 on:
   pull_request:
     branches:
       - main
+    paths:
+      - 'ts/**'
+      - 'spec/**'
+      - '.github/workflows/ts.yml'
+
+defaults:
+  run:
+    working-directory: ts
 
 jobs:
   check:

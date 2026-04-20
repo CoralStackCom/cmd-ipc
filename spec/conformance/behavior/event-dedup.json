@@ -1,0 +1,24 @@
+{
+  "description": "Receiving two event messages with the same 'id' delivers to local listeners exactly once (dedup).",
+  "setup": {
+    "registry": { "id": "main", "localEventListeners": ["user.updated"] },
+    "peers": [{ "channelId": "worker-1" }, { "channelId": "worker-2" }]
+  },
+  "steps": [
+    {
+      "direction": "inbound",
+      "from": "worker-1",
+      "message": { "id": "evt-42", "type": "event", "eventId": "user.updated", "payload": { "userId": 1 } }
+    },
+    {
+      "direction": "inbound",
+      "from": "worker-2",
+      "message": { "id": "evt-42", "type": "event", "eventId": "user.updated", "payload": { "userId": 1 } }
+    },
+    {
+      "direction": "assert-local-listener",
+      "eventId": "user.updated",
+      "invocations": 1
+    }
+  ]
+}

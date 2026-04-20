@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://coralstack.com/cmd-ipc/spec/v1/event.json",
+  "title": "Event",
+  "description": "Fire-and-forget event. Events with 'eventId' prefixed by '_' are private and MUST NOT be broadcast on any channel.",
+  "type": "object",
+  "required": ["id", "type", "eventId"],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Message ID, also used by receivers for dedup on broadcast fan-out."
+    },
+    "type": { "const": "event" },
+    "eventId": { "type": "string", "minLength": 1 },
+    "payload": {
+      "description": "Event payload. Shape is defined by the EventSchemaMap entry (if any)."
+    }
+  }
+}

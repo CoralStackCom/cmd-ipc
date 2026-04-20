@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://coralstack.com/cmd-ipc/spec/v1/execute.command.response.json",
+  "title": "ExecuteCommandResponse",
+  "type": "object",
+  "required": ["id", "type", "thid", "response"],
+  "additionalProperties": false,
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "type": { "const": "execute.command.response" },
+    "thid": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Echoes the 'id' of the execute.command.request being responded to."
+    },
+    "response": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["ok"],
+          "additionalProperties": false,
+          "properties": {
+            "ok": { "const": true },
+            "result": {
+              "description": "Command-specific result; shape is defined by the target command's schema (if any)."
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["ok", "error"],
+          "additionalProperties": false,
+          "properties": {
+            "ok": { "const": false },
+            "error": {
+              "type": "object",
+              "required": ["code", "message"],
+              "additionalProperties": false,
+              "properties": {
+                "code": {
+                  "enum": [
+                    "not_found",
+                    "invalid_request",
+                    "internal_error",
+                    "timeout",
+                    "channel_disconnected"
+                  ]
+                },
+                "message": { "type": "string" }
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

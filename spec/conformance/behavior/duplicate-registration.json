@@ -1,0 +1,33 @@
+{
+  "description": "Registering the same command ID twice from the same channel is rejected with duplicate_command.",
+  "setup": {
+    "registry": { "id": "main" },
+    "peers": [{ "channelId": "worker-1" }]
+  },
+  "steps": [
+    {
+      "direction": "inbound",
+      "from": "worker-1",
+      "message": { "id": "m-1", "type": "register.command.request", "command": { "id": "math.add" } }
+    },
+    {
+      "direction": "outbound",
+      "to": "worker-1",
+      "expected": { "type": "register.command.response", "thid": "m-1", "response": { "ok": true } }
+    },
+    {
+      "direction": "inbound",
+      "from": "worker-1",
+      "message": { "id": "m-2", "type": "register.command.request", "command": { "id": "math.add" } }
+    },
+    {
+      "direction": "outbound",
+      "to": "worker-1",
+      "expected": {
+        "type": "register.command.response",
+        "thid": "m-2",
+        "response": { "ok": false, "error": "duplicate_command" }
+      }
+    }
+  ]
+}

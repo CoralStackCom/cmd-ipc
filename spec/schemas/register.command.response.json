@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://coralstack.com/cmd-ipc/spec/v1/register.command.response.json",
+  "title": "RegisterCommandResponse",
+  "type": "object",
+  "required": ["id", "type", "thid", "response"],
+  "additionalProperties": false,
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "type": { "const": "register.command.response" },
+    "thid": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Echoes the 'id' of the register.command.request being responded to."
+    },
+    "response": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["ok"],
+          "additionalProperties": false,
+          "properties": { "ok": { "const": true } }
+        },
+        {
+          "type": "object",
+          "required": ["ok", "error"],
+          "additionalProperties": false,
+          "properties": {
+            "ok": { "const": false },
+            "error": { "enum": ["duplicate_command"] }
+          }
+        }
+      ]
+    }
+  }
+}

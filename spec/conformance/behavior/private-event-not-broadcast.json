@@ -1,0 +1,36 @@
+{
+  "description": "Events whose eventId begins with '_' MUST be delivered to local listeners but MUST NOT be broadcast over any channel.",
+  "setup": {
+    "registry": { "id": "main", "localEventListeners": ["_local.audit", "user.updated"] },
+    "peers": [{ "channelId": "worker-1" }]
+  },
+  "steps": [
+    {
+      "direction": "local-call",
+      "trigger": { "emitEvent": ["_local.audit", { "action": "login" }] }
+    },
+    {
+      "direction": "assert-no-outbound",
+      "to": "worker-1"
+    },
+    {
+      "direction": "assert-local-listener",
+      "eventId": "_local.audit",
+      "invocations": 1,
+      "lastPayload": { "action": "login" }
+    },
+    {
+      "direction": "local-call",
+      "trigger": { "emitEvent": ["user.updated", { "userId": 42 }] }
+    },
+    {
+      "direction": "outbound",
+      "to": "worker-1",
+      "expected": {
+        "type": "event",
+        "eventId": "user.updated",
+        "payload": { "userId": 42 }
+      }
+    }
+  ]
+}

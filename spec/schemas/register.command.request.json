@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://coralstack.com/cmd-ipc/spec/v1/register.command.request.json",
+  "title": "RegisterCommandRequest",
+  "description": "Announces a single command that the sender can execute on behalf of the receiver.",
+  "type": "object",
+  "required": ["id", "type", "command"],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Message ID. Echoed as 'thid' on the response."
+    },
+    "type": { "const": "register.command.request" },
+    "command": { "$ref": "command-definition.json" }
+  }
+}

@@ -3,11 +3,15 @@ name: Publish to npm
 on:
   push:
     tags:
-      - 'v*' # Triggers on tags like v1.0.0, v2.1.3, etc.
+      - 'ts-v*' # TypeScript releases (e.g. ts-v1.0.0)
   workflow_dispatch:
 
 permissions:
   id-token: write
+
+defaults:
+  run:
+    working-directory: ts
 
 jobs:
   publish:
@@ -35,8 +39,8 @@ jobs:
 
       - name: Publish @coralstack/cmd-ipc
         run: npm publish --provenance --access public
-        working-directory: packages/cmd-ipc
+        working-directory: ts/packages/cmd-ipc
 
       - name: Publish @coralstack/cmd-ipc-mcp
         run: npm publish --provenance --access public
-        working-directory: packages/cmd-ipc-mcp
+        working-directory: ts/packages/cmd-ipc-mcp

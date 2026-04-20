@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://coralstack.com/cmd-ipc/spec/v1/list.commands.request.json",
+  "title": "ListCommandsRequest",
+  "description": "Asks a peer to enumerate the commands it exposes (private commands excluded).",
+  "type": "object",
+  "required": ["id", "type"],
+  "additionalProperties": false,
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "type": { "const": "list.commands.request" }
+  }
+}

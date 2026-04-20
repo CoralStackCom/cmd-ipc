@@ -1,0 +1,32 @@
+{
+  "description": "Executing an unknown command returns a structured not_found response, not an exception.",
+  "setup": {
+    "registry": { "id": "main" },
+    "peers": [{ "channelId": "worker-1" }]
+  },
+  "steps": [
+    {
+      "direction": "inbound",
+      "from": "worker-1",
+      "message": {
+        "id": "m-1",
+        "type": "execute.command.request",
+        "commandId": "does.not.exist",
+        "request": {}
+      }
+    },
+    {
+      "direction": "outbound",
+      "to": "worker-1",
+      "expected": {
+        "id": { "$match": "uuid" },
+        "type": "execute.command.response",
+        "thid": "m-1",
+        "response": {
+          "ok": false,
+          "error": { "code": "not_found", "message": { "$match": "any-string" } }
+        }
+      }
+    }
+  ]
+}

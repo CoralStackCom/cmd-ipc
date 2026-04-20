@@ -1,0 +1,35 @@
+{
+  "description": "list.commands.request returns all locally-known public commands via thid correlation.",
+  "setup": {
+    "registry": {
+      "id": "main",
+      "localCommands": [
+        { "id": "math.add",     "description": "Add two numbers" },
+        { "id": "math.sub",     "description": "Subtract two numbers" },
+        { "id": "_secret.ping", "description": "Private, must be omitted" }
+      ]
+    },
+    "peers": [{ "channelId": "worker-1" }]
+  },
+  "steps": [
+    {
+      "direction": "inbound",
+      "from": "worker-1",
+      "message": { "id": "m-1", "type": "list.commands.request" }
+    },
+    {
+      "direction": "outbound",
+      "to": "worker-1",
+      "expected": {
+        "type": "list.commands.response",
+        "thid": "m-1",
+        "commands": {
+          "$unordered": [
+            { "id": "math.add", "description": "Add two numbers" },
+            { "id": "math.sub", "description": "Subtract two numbers" }
+          ]
+        }
+      }
+    }
+  ]
+}
