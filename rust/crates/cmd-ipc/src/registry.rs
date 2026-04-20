@@ -64,8 +64,7 @@ impl Default for Config {
     }
 }
 
-type HandlerFn =
-    dyn Fn(Value) -> BoxFuture<'static, Result<Value, ExecuteError>> + Send + Sync;
+type HandlerFn = dyn Fn(Value) -> BoxFuture<'static, Result<Value, ExecuteError>> + Send + Sync;
 type EventListener = Arc<dyn Fn(Value) + Send + Sync>;
 
 struct LocalEntry {
@@ -94,7 +93,12 @@ struct Inner {
     id: String,
     router_channel: Option<String>,
     local: Mutex<HashMap<String, LocalEntry>>,
+    /// command id -> owning channel id
     remote: Mutex<HashMap<String, String>>,
+    /// command id -> advertised definition (description + schema)
+    /// kept parallel to `remote` so `list_commands_detail` can render
+    /// the same richness for remote entries as for local ones.
+    remote_defs: Mutex<HashMap<String, CommandDef>>,
     channels: Mutex<HashMap<String, Arc<dyn CommandChannel>>>,
     execute_replies: TtlMap<MessageId, PendingExecute>,
     register_replies: TtlMap<MessageId, PendingRegister>,
@@ -118,6 +122,7 @@ impl CommandRegistry {
             router_channel: cfg.router_channel,
             local: Mutex::new(HashMap::new()),
             remote: Mutex::new(HashMap::new()),
+            remote_defs: Mutex::new(HashMap::new()),
             channels: Mutex::new(HashMap::new()),
             execute_replies: TtlMap::new(cfg.request_ttl),
             register_replies: TtlMap::new(cfg.request_ttl),
@@ -133,18 +138,70 @@ impl CommandRegistry {
         &self.inner.id
     }
 
+    /// Returns the command ids currently reachable from this registry —
+    /// every local command plus every remote command previously
+    /// advertised by a peer. The listing excludes private commands
+    /// (leading `_`) since those are never advertised on the wire and
+    /// would not be callable from a remote caller anyway.
+    ///
+    /// Order is unspecified; results are sorted for stable display.
+    pub fn list_commands(&self) -> Vec<String> {
+        let mut ids: Vec<String> = self
+            .inner
+            .local
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, entry)| !entry.is_private)
+            .map(|(id, _)| id.clone())
+            .collect();
+        ids.extend(self.inner.remote.lock().unwrap().keys().cloned());
+        ids.sort();
+        ids.dedup();
+        ids
+    }
+
+    /// Returns the full [`CommandDef`] (id + description + schema) for
+    /// every reachable command — local (non-private) and remote. Remote
+    /// defs are those advertised via `register.command.request` or
+    /// `list.commands.response` on the channel.
+    ///
+    /// Results are sorted by id. A command id is only included once even
+    /// if both a local and remote entry exist (local wins).
+    pub fn list_commands_detail(&self) -> Vec<CommandDef> {
+        let mut out: HashMap<String, CommandDef> = HashMap::new();
+        for (id, entry) in self.inner.local.lock().unwrap().iter() {
+            if !entry.is_private {
+                out.insert(id.clone(), entry.def.clone());
+            }
+        }
+        for (id, def) in self.inner.remote_defs.lock().unwrap().iter() {
+            out.entry(id.clone()).or_insert_with(|| def.clone());
+        }
+        let mut v: Vec<CommandDef> = out.into_values().collect();
+        v.sort_by(|a, b| a.id.cmp(&b.id));
+        v
+    }
+
     /// Registers a typed [`Command`].
     ///
     /// If the registry has a `router_channel`, non-private commands are
     /// first escalated upstream; the local entry is only added after
     /// the router acks.
+    ///
+    /// The schema returned by `C::schema()` is normalized by
+    /// [`crate::schema::normalize_schema`] before being stored and
+    /// advertised on the wire, so every schema that leaves the
+    /// registry — via `list_commands_detail`, `list.commands.response`,
+    /// or `register.command.request` — is language-agnostic JSON
+    /// Schema regardless of how the `Command` impl was built.
     pub async fn register<C: Command>(&self, cmd: C) -> Result<(), CommandError> {
         let id = C::ID.to_string();
         let is_private = id.starts_with('_');
         let def = CommandDef {
             id: id.clone(),
             description: C::DESCRIPTION.map(String::from),
-            schema: C::schema(),
+            schema: C::schema().map(crate::schema::normalize_command_schema),
         };
         let handler = make_handler::<C>(Arc::new(cmd));
         self.register_inner(id, handler, def, is_private).await
@@ -165,14 +222,16 @@ impl CommandRegistry {
         // Non-private commands escalate to the router before being added.
         if !is_private {
             if let Some(router_id) = self.inner.router_channel.clone() {
-                let router_ch =
-                    self.inner.channels.lock().unwrap().get(&router_id).cloned();
+                let router_ch = self.inner.channels.lock().unwrap().get(&router_id).cloned();
                 if let Some(router_ch) = router_ch {
                     let req_id = MessageId::new_v4();
                     let (tx, rx) = oneshot::channel();
                     self.inner.register_replies.insert(
                         req_id,
-                        PendingRegister { tx, target_channel: router_id.clone() },
+                        PendingRegister {
+                            tx,
+                            target_channel: router_id.clone(),
+                        },
                     );
                     router_ch
                         .send(Message::RegisterCommandRequest {
@@ -195,11 +254,14 @@ impl CommandRegistry {
             }
         }
 
-        self.inner
-            .local
-            .lock()
-            .unwrap()
-            .insert(id, LocalEntry { handler, def, is_private });
+        self.inner.local.lock().unwrap().insert(
+            id,
+            LocalEntry {
+                handler,
+                def,
+                is_private,
+            },
+        );
         Ok(())
     }
 
@@ -229,7 +291,9 @@ impl CommandRegistry {
 
         // Ask the peer for its command list. The response is handled
         // by the driver loop, which will register each entry as remote.
-        if let Err(e) = channel.send(Message::ListCommandsRequest { id: MessageId::new_v4() }) {
+        if let Err(e) = channel.send(Message::ListCommandsRequest {
+            id: MessageId::new_v4(),
+        }) {
             self.inner.channels.lock().unwrap().remove(&id);
             return Err(e);
         }
@@ -256,9 +320,7 @@ impl CommandRegistry {
         Res: DeserializeOwned,
     {
         let req_value = serde_json::to_value(request)?;
-        let result = self
-            .execute_raw(command_id.to_string(), req_value)
-            .await?;
+        let result = self.execute_raw(command_id.to_string(), req_value).await?;
         let deserialized = serde_json::from_value(result.unwrap_or(Value::Null))?;
         Ok(deserialized)
     }
@@ -279,7 +341,10 @@ impl CommandRegistry {
             .get(&command_id)
             .map(|entry| entry.handler.clone());
         if let Some(handler) = local_handler {
-            return handler(request).await.map(Some).map_err(|e| e.into_command_error(&command_id));
+            return handler(request)
+                .await
+                .map(Some)
+                .map_err(|e| e.into_command_error(&command_id));
         }
 
         // 2) Known remote command.
@@ -293,8 +358,7 @@ impl CommandRegistry {
             return Err(CommandError::NotFound(command_id));
         };
 
-        let channel =
-            self.inner.channels.lock().unwrap().get(&target_id).cloned();
+        let channel = self.inner.channels.lock().unwrap().get(&target_id).cloned();
         let Some(channel) = channel else {
             return Err(CommandError::ChannelDisconnected);
         };
@@ -314,7 +378,10 @@ impl CommandRegistry {
         let (tx, rx) = oneshot::channel();
         self.inner.execute_replies.insert(
             req_id,
-            PendingExecute { tx, target_channel: target_id },
+            PendingExecute {
+                tx,
+                target_channel: target_id,
+            },
         );
         channel
             .send(Message::ExecuteCommandRequest {
@@ -326,9 +393,7 @@ impl CommandRegistry {
 
         match rx.await {
             Ok(ExecuteResult::Ok { result, .. }) => Ok(result),
-            Ok(ExecuteResult::Err { error, .. }) => {
-                Err(error_to_command_error(error, &command_id))
-            }
+            Ok(ExecuteResult::Err { error, .. }) => Err(error_to_command_error(error, &command_id)),
             Err(_) => {
                 self.inner.execute_replies.remove(&req_id);
                 Err(CommandError::ChannelDisconnected)
@@ -339,11 +404,7 @@ impl CommandRegistry {
     /// Emits an event to local listeners and (unless the event id is
     /// private, i.e. starts with `_`) broadcasts to every connected
     /// channel.
-    pub fn emit_event<P: Serialize>(
-        &self,
-        event_id: &str,
-        payload: P,
-    ) -> Result<(), CommandError> {
+    pub fn emit_event<P: Serialize>(&self, event_id: &str, payload: P) -> Result<(), CommandError> {
         let payload_value = serde_json::to_value(payload)?;
         let msg_id = MessageId::new_v4();
         self.inner.seen_events.insert(msg_id, ());
@@ -412,11 +473,7 @@ impl Inner {
     }
 
     /// Central dispatcher invoked by each channel's driver loop.
-    async fn handle_message(
-        inner: Arc<Self>,
-        channel: Arc<dyn CommandChannel>,
-        msg: Message,
-    ) {
+    async fn handle_message(inner: Arc<Self>, channel: Arc<dyn CommandChannel>, msg: Message) {
         match msg {
             Message::RegisterCommandRequest { id, command } => {
                 Self::handle_register_request(inner, channel, id, command).await;
@@ -437,11 +494,28 @@ impl Inner {
             Message::ListCommandsResponse { commands, .. } => {
                 let channel_id = channel.id().to_string();
                 let mut remote = inner.remote.lock().unwrap();
+                let mut remote_defs = inner.remote_defs.lock().unwrap();
                 for cmd in commands {
-                    remote.entry(cmd.id).or_insert_with(|| channel_id.clone());
+                    // Normalize ingested schemas so the local cache
+                    // matches what register() produces.
+                    let cmd = CommandDef {
+                        id: cmd.id,
+                        description: cmd.description,
+                        schema: cmd.schema.map(crate::schema::normalize_command_schema),
+                    };
+                    let entry_is_new = !remote.contains_key(&cmd.id);
+                    if entry_is_new {
+                        remote.insert(cmd.id.clone(), channel_id.clone());
+                    }
+                    // Always refresh the def (the latest advertisement wins).
+                    remote_defs.insert(cmd.id.clone(), cmd);
                 }
             }
-            Message::ExecuteCommandRequest { id, command_id, request } => {
+            Message::ExecuteCommandRequest {
+                id,
+                command_id,
+                request,
+            } => {
                 Self::handle_execute_request(
                     inner,
                     channel,
@@ -454,7 +528,11 @@ impl Inner {
             Message::ExecuteCommandResponse { thid, response, .. } => {
                 Self::handle_execute_response(&inner, thid, response);
             }
-            Message::Event { id, event_id, payload } => {
+            Message::Event {
+                id,
+                event_id,
+                payload,
+            } => {
                 Self::handle_event(&inner, channel, id, event_id, payload);
             }
         }
@@ -466,6 +544,14 @@ impl Inner {
         req_id: MessageId,
         command: CommandDef,
     ) {
+        // Normalize ingested schemas so our cached copy is guaranteed
+        // to be language-agnostic JSON Schema, even if the peer didn't
+        // normalize on its side.
+        let command = CommandDef {
+            id: command.id,
+            description: command.description,
+            schema: command.schema.map(crate::schema::normalize_command_schema),
+        };
         let channel_id = channel.id().to_string();
         let command_id = command.id.clone();
 
@@ -512,7 +598,10 @@ impl Inner {
                     let (tx, rx) = oneshot::channel();
                     inner.register_replies.insert(
                         up_id,
-                        PendingRegister { tx, target_channel: router_id },
+                        PendingRegister {
+                            tx,
+                            target_channel: router_id,
+                        },
                     );
                     if router_ch
                         .send(Message::RegisterCommandRequest {
@@ -553,7 +642,12 @@ impl Inner {
             .remote
             .lock()
             .unwrap()
-            .insert(command_id, channel_id);
+            .insert(command_id.clone(), channel_id);
+        inner
+            .remote_defs
+            .lock()
+            .unwrap()
+            .insert(command_id, command);
         let _ = channel.send(Message::RegisterCommandResponse {
             id: MessageId::new_v4(),
             thid: req_id,
@@ -578,7 +672,10 @@ impl Inner {
         if let Some(handler) = handler {
             let result = handler(request).await;
             let response = match result {
-                Ok(v) => ExecuteResult::Ok { ok: True, result: Some(v) },
+                Ok(v) => ExecuteResult::Ok {
+                    ok: True,
+                    result: Some(v),
+                },
                 Err(error) => ExecuteResult::Err { ok: False, error },
             };
             let _ = origin.send(Message::ExecuteCommandResponse {
@@ -648,7 +745,10 @@ impl Inner {
 
         inner.routes.insert(
             req_id,
-            RouteEntry { origin_channel: origin_id, target_channel: target_id },
+            RouteEntry {
+                origin_channel: origin_id,
+                target_channel: target_id,
+            },
         );
         let _ = target.send(Message::ExecuteCommandRequest {
             id: req_id,
@@ -657,11 +757,7 @@ impl Inner {
         });
     }
 
-    fn handle_execute_response(
-        inner: &Arc<Self>,
-        thid: MessageId,
-        response: ExecuteResult,
-    ) {
+    fn handle_execute_response(inner: &Arc<Self>, thid: MessageId, response: ExecuteResult) {
         // Either this is a reply to a local call…
         if let Some(pending) = inner.execute_replies.remove(&thid) {
             let _ = pending.tx.send(response);
@@ -736,12 +832,25 @@ impl Inner {
         // Drop the channel from the lookup table.
         inner.channels.lock().unwrap().remove(channel_id);
 
-        // Drop every remote command owned by this channel.
-        inner
-            .remote
-            .lock()
-            .unwrap()
-            .retain(|_, owner| owner != channel_id);
+        // Drop every remote command owned by this channel, along with
+        // its cached definition.
+        let dropped_ids: Vec<String> = {
+            let mut remote = inner.remote.lock().unwrap();
+            let to_drop: Vec<String> = remote
+                .iter()
+                .filter(|(_, owner)| *owner == channel_id)
+                .map(|(id, _)| id.clone())
+                .collect();
+            for id in &to_drop {
+                remote.remove(id);
+            }
+            to_drop
+        };
+        let mut remote_defs = inner.remote_defs.lock().unwrap();
+        for id in dropped_ids {
+            remote_defs.remove(&id);
+        }
+        drop(remote_defs);
 
         // Reject any pending executes whose response was expected from
         // this channel.
@@ -817,7 +926,10 @@ fn make_handler<C: Command>(cmd: Arc<C>) -> Arc<HandlerFn> {
                 code: ExecuteErrorCode::InvalidRequest,
                 message: e.to_string(),
             })?;
-            let res = cmd.handle(req).await.map_err(|e| command_error_to_execute(&e, C::ID))?;
+            let res = cmd
+                .handle(req)
+                .await
+                .map_err(|e| command_error_to_execute(&e, C::ID))?;
             serde_json::to_value(res).map_err(|e| ExecuteError {
                 code: ExecuteErrorCode::InternalError,
                 message: e.to_string(),

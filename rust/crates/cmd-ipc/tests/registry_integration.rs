@@ -146,8 +146,7 @@ fn sleep_ms(ms: u64) -> impl Future<Output = ()> {
 
 #[test]
 fn child_executes_command_on_root_via_router() {
-    let (reg_a, reg_b, _ca, _cb, _pool) =
-        wire_pair("a", "b", None, Some("a"));
+    let (reg_a, reg_b, _ca, _cb, _pool) = wire_pair("a", "b", None, Some("a"));
 
     block_on(async {
         reg_a.register(MathAdd).await.unwrap();
@@ -162,8 +161,7 @@ fn child_executes_command_on_root_via_router() {
 
 #[test]
 fn child_registration_escalates_and_root_can_invoke() {
-    let (reg_a, reg_b, _ca, _cb, _pool) =
-        wire_pair("a", "b", None, Some("a"));
+    let (reg_a, reg_b, _ca, _cb, _pool) = wire_pair("a", "b", None, Some("a"));
 
     block_on(async {
         // Register on the child — escalates to the root.
@@ -176,8 +174,7 @@ fn child_registration_escalates_and_root_can_invoke() {
 
 #[test]
 fn duplicate_registration_fails() {
-    let (reg_a, _reg_b, _ca, _cb, _pool) =
-        wire_pair("a", "b", None, Some("a"));
+    let (reg_a, _reg_b, _ca, _cb, _pool) = wire_pair("a", "b", None, Some("a"));
 
     block_on(async {
         reg_a.register(MathAdd).await.unwrap();
@@ -188,8 +185,7 @@ fn duplicate_registration_fails() {
 
 #[test]
 fn unknown_command_returns_not_found() {
-    let (_reg_a, reg_b, _ca, _cb, _pool) =
-        wire_pair("a", "b", None, Some("a"));
+    let (_reg_a, reg_b, _ca, _cb, _pool) = wire_pair("a", "b", None, Some("a"));
 
     block_on(async {
         let err = reg_b
@@ -202,8 +198,7 @@ fn unknown_command_returns_not_found() {
 
 #[test]
 fn handler_error_surfaces_to_caller() {
-    let (reg_a, reg_b, _ca, _cb, _pool) =
-        wire_pair("a", "b", None, Some("a"));
+    let (reg_a, reg_b, _ca, _cb, _pool) = wire_pair("a", "b", None, Some("a"));
 
     block_on(async {
         reg_a.register(Failing).await.unwrap();
@@ -227,8 +222,7 @@ fn private_command_stays_local() {
         }
     }
 
-    let (reg_a, reg_b, _ca, _cb, _pool) =
-        wire_pair("a", "b", None, Some("a"));
+    let (reg_a, reg_b, _ca, _cb, _pool) = wire_pair("a", "b", None, Some("a"));
 
     block_on(async {
         reg_a.register(LocalOnly).await.unwrap();
@@ -251,8 +245,7 @@ fn private_command_stays_local() {
 
 #[test]
 fn events_broadcast_and_dedup() {
-    let (reg_a, reg_b, _ca, _cb, _pool) =
-        wire_pair("a", "b", None, Some("a"));
+    let (reg_a, reg_b, _ca, _cb, _pool) = wire_pair("a", "b", None, Some("a"));
 
     // Give the list-commands handshake a moment to settle before we
     // start emitting.
@@ -264,7 +257,9 @@ fn events_broadcast_and_dedup() {
         h.lock().unwrap().push(payload.to_string());
     });
 
-    reg_a.emit_event("user.created", json!({ "id": "u1" })).unwrap();
+    reg_a
+        .emit_event("user.created", json!({ "id": "u1" }))
+        .unwrap();
 
     wait_for(|| !hits.lock().unwrap().is_empty());
 
@@ -275,8 +270,7 @@ fn events_broadcast_and_dedup() {
 
 #[test]
 fn private_event_does_not_cross_channel() {
-    let (reg_a, reg_b, _ca, _cb, _pool) =
-        wire_pair("a", "b", None, Some("a"));
+    let (reg_a, reg_b, _ca, _cb, _pool) = wire_pair("a", "b", None, Some("a"));
 
     let hits = Arc::new(Mutex::new(0u32));
     let h = hits.clone();
@@ -293,8 +287,7 @@ fn private_event_does_not_cross_channel() {
 
 #[test]
 fn channel_close_fails_pending_executes() {
-    let (reg_a, reg_b, _ca, ch_for_b, _pool) =
-        wire_pair("a", "b", None, Some("a"));
+    let (reg_a, reg_b, _ca, ch_for_b, _pool) = wire_pair("a", "b", None, Some("a"));
 
     // Register a handler that never returns.
     struct HangForever;

@@ -18,6 +18,8 @@ schemars.workspace = true
 futures.workspace = true
 uuid.workspace = true
 thiserror.workspace = true
+coralstack-cmd-ipc-macros = { path = "../cmd-ipc-macros", version = "0.1.0" }
 
 [dev-dependencies]
 futures = { workspace = true, features = ["executor", "thread-pool"] }
+serde = { workspace = true, features = ["derive"] }

@@ -93,13 +93,8 @@ impl<'de> Deserialize<'de> for False {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(untagged)]
 pub enum RegisterResult {
-    Ok {
-        ok: True,
-    },
-    Err {
-        ok: False,
-        error: RegisterErrorCode,
-    },
+    Ok { ok: True },
+    Err { ok: False, error: RegisterErrorCode },
 }
 
 /// Body of an `execute.command.response` message.
@@ -125,10 +120,7 @@ pub enum ExecuteResult {
 #[serde(tag = "type")]
 pub enum Message {
     #[serde(rename = "register.command.request")]
-    RegisterCommandRequest {
-        id: MessageId,
-        command: CommandDef,
-    },
+    RegisterCommandRequest { id: MessageId, command: CommandDef },
 
     #[serde(rename = "register.command.response")]
     RegisterCommandResponse {
@@ -455,7 +447,8 @@ mod tests {
 
     #[test]
     fn unknown_type_rejected() {
-        let bad = json!({ "type": "not.a.real.type", "id": "00000000-0000-0000-0000-000000000000" });
+        let bad =
+            json!({ "type": "not.a.real.type", "id": "00000000-0000-0000-0000-000000000000" });
         assert!(serde_json::from_value::<Message>(bad).is_err());
     }
 

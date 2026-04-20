@@ -79,10 +79,7 @@ impl InMemoryChannel {
     /// Each half carries a label, since the registry uses it as the
     /// routing key. The two halves typically use each other's labels:
     /// the parent calls the child channel `"child"` and vice versa.
-    pub fn pair(
-        id_a: impl Into<String>,
-        id_b: impl Into<String>,
-    ) -> (Arc<Self>, Arc<Self>) {
+    pub fn pair(id_a: impl Into<String>, id_b: impl Into<String>) -> (Arc<Self>, Arc<Self>) {
         let (tx_a_to_b, rx_b) = unbounded();
         let (tx_b_to_a, rx_a) = unbounded();
         let (close_a_tx, close_a_rx) = oneshot::channel::<()>();

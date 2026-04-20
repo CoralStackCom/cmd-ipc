@@ -34,13 +34,18 @@ make ts-ready                # TS pre-commit gate (auto-fixes formatting + fixab
 make ts-test                 # Run TS tests headless
 make ts-test UI=1            # Run TS tests with vitest web UI
 make ts-release              # Run the TS release script
-make ts-start-example EXAMPLE=web-workers   # or electron, agent-mcp, cf-worker
+make ts-start-example web-workers   # or electron, agent-mcp, cf-worker
 
 # Rust
 make rust-build
 make rust-test
-make rust-lint
+make rust-lint               # clippy -D warnings
 make rust-format
+make rs-ready                # Rust pre-commit gate (fmt/clippy/test) — parallel to ts-ready
+make rs-start-example multi-service
+
+# Both languages
+make ready                   # Combined pre-commit gate: ts-ready + rs-ready
 
 # Docs
 make docs-dev                # Run docs site locally
@@ -78,6 +83,54 @@ Per-language commands still work inside each subdir (`cd ts && yarn ...`, `cd ru
 1. **MCPClientChannel** (`src/client/mcp-client-channel.ts`) - Connects to remote MCP servers, exposes their tools as cmd-ipc commands. Uses the official `@modelcontextprotocol/sdk` `Client`.
 
 2. **MCPServerChannel** (`src/server/mcp-server-channel.ts`) - Exposes cmd-ipc commands as MCP tools. Uses the official `@modelcontextprotocol/sdk` `McpServer`.
+
+### Core Components (`rust/crates/cmd-ipc/`)
+
+The Rust port mirrors the TypeScript library's protocol and routing semantics with a strict, statically-typed API (no Loose mode — Rust types ARE the schema).
+
+1. **`CommandRegistry`** (`src/registry.rs`) — same routing model as TS: local / remote / router_channel escalation, private-prefix isolation, event fan-out with dedup, TTL-tracked in-flight requests. `list_commands()` returns the reachable command IDs (mirrors TS `listCommands()`).
+2. **`CommandChannel` trait + `InMemoryChannel`** (`src/channel.rs`) — pluggable transport interface plus an in-memory pair for same-process tests and examples.
+3. **`Command` trait** (`src/command.rs`) — typed `Request`/`Response` associated types and an `async fn handle`. `schema()` returns the JSON Schema advertised on the wire.
+4. **Wire messages** (`src/message.rs`) — the seven `Message` variants, byte-identical to the TS union.
+
+### Macros: `#[command]` / `#[commands]` (`rust/crates/cmd-ipc-macros/`)
+
+Parallels the TS `@Command` decorator + `registerCommands([instance], registry)` pattern. Two shapes:
+
+```rust
+use coralstack_cmd_ipc::prelude::*;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
+// Impl-block shape (primary, matches TS class-method decorator)
+#[derive(Deserialize, Serialize, JsonSchema)]
+struct AddReq { a: i64, b: i64 }
+
+struct MathService;
+
+#[commands]
+impl MathService {
+    #[command("math.add", description = "Add two integers")]
+    async fn add(&self, req: AddReq) -> Result<i64, CommandError> { Ok(req.a + req.b) }
+
+    #[command("_internal.ping")] // private; leading underscore stays local
+    async fn ping(&self, _: ()) -> Result<String, CommandError> { Ok("pong".into()) }
+}
+
+MathService.register_all(&registry).await?;
+
+// Free-fn shape (one-offs)
+#[command("greet")]
+async fn greet(name: String) -> Result<String, CommandError> { Ok(format!("hello, {name}")) }
+
+registry.register(greet_command()).await?;
+```
+
+`coralstack-cmd-ipc` re-exports both attributes, so user crates list only one dependency. Generated code auto-derives `Command::schema()` via `schemars::schema_for!`.
+
+### Worked example: `rust/examples/multi-service/`
+
+Two registries (`root` and `worker`) wired by `InMemoryChannel::pair`, a REPL on the root that can call commands on either. Run via `make rs-start-example multi-service`. Demonstrates: macro registration, cross-registry routing, event fan-out — the Rust equivalent of the TS `web-workers` example but entirely in one process.
 
 ### Message Protocol
 

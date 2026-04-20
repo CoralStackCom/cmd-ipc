@@ -34,7 +34,11 @@ where
     /// A `ttl` of zero disables expiry entirely — entries stay until
     /// explicitly removed.
     pub fn new(ttl: Duration) -> Self {
-        Self { ttl, inner: Mutex::new(HashMap::new()), on_expire: None }
+        Self {
+            ttl,
+            inner: Mutex::new(HashMap::new()),
+            on_expire: None,
+        }
     }
 
     /// Sets a callback invoked whenever an entry is removed due to TTL
@@ -82,11 +86,7 @@ where
         V: Clone,
     {
         self.take_if_expired(key);
-        self.inner
-            .lock()
-            .unwrap()
-            .get(key)
-            .map(|(v, _)| v.clone())
+        self.inner.lock().unwrap().get(key).map(|(v, _)| v.clone())
     }
 
     /// Returns the current size of the map (including any stale entries
