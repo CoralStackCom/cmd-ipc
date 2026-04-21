@@ -7,6 +7,7 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 description = "Procedural macros for coralstack-cmd-ipc"
+readme = "README.md"
 
 [lib]
 proc-macro = true
