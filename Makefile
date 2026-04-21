@@ -3,7 +3,7 @@
         ts-setup ts-build ts-ready ts-test ts-release ts-start-example \
         rust-build rust-test rust-lint rust-format rs-ready rs-start-example \
         docs-install docs-dev docs-build \
-        conformance
+        conformance spec-format spec-check-format
 
 help:             ## Show this help
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -38,7 +38,7 @@ check-node:
 install: ts-setup docs-install                      ## Install all dependencies (TS + docs)
 build: ts-build rust-build                          ## Build all implementations
 test: ts-test rust-test conformance                 ## Run all tests + conformance
-ready: ts-ready rs-ready                            ## Pre-commit gate for both languages
+ready: ts-ready rs-ready spec-check-format          ## Pre-commit gate for both languages
 
 clean:
 	rm -rf ts/node_modules "ts/packages/*/dist" "ts/examples/*/dist" \
@@ -105,3 +105,13 @@ docs-build:   ; cd docs && yarn build                    ## Build docs site
 conformance:                                             ## Run TS + Rust conformance suites
 	cd ts && yarn conformance || true
 	cd rust && cargo test --test conformance || true
+
+# Reformat every JSON file under spec/ (schemas + conformance vectors) using
+# the TypeScript workspace's prettier config — keeps diffs minimal and
+# consistent across both language harnesses.
+spec-format:                                             ## Format spec/*.json with prettier
+	cd ts && yarn prettier '../spec/**/*.json' -w
+
+# Fail if any spec/*.json is not prettier-clean. Wired into the ready gate.
+spec-check-format:                                       ## Check spec/*.json is prettier-formatted
+	cd ts && yarn prettier '../spec/**/*.json' --check

@@ -26,7 +26,10 @@
     { "direction": "close-channel", "channel": "worker-1" },
     { "direction": "local-call", "trigger": { "listCommands": [] } },
     { "direction": "local-result", "expected": [] },
-    { "direction": "local-call", "trigger": { "executeCommand": ["math.add", { "a": 1, "b": 2 }] } },
+    {
+      "direction": "local-call",
+      "trigger": { "executeCommand": ["math.add", { "a": 1, "b": 2 }] }
+    },
     { "direction": "local-result", "expectedError": { "code": "not_found" } }
   ]
 }

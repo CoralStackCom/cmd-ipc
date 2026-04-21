@@ -15,7 +15,10 @@
         "commands": [{ "id": "math.add" }]
       }
     },
-    { "direction": "local-call", "trigger": { "executeCommand": ["math.add", { "a": 2, "b": 3 }] } },
+    {
+      "direction": "local-call",
+      "trigger": { "executeCommand": ["math.add", { "a": 2, "b": 3 }] }
+    },
     {
       "direction": "outbound",
       "to": "worker-1",

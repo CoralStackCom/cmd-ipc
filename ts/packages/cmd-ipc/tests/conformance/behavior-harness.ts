@@ -1,10 +1,9 @@
-import { CommandRegistry } from '../../src/registry/command-registry'
 import { MessageType } from '../../src/registry/command-message-schemas'
+import { CommandRegistry } from '../../src/registry/command-registry'
+import type { CaptureBag } from './matchers'
+import { match } from './matchers'
 import { MockChannel } from './mock-channel'
-import { CaptureBag, match } from './matchers'
 import { BEHAVIOR_DIR, listVectors, readJson } from './spec-paths'
-
-/* eslint-disable @typescript-eslint/no-explicit-any */
 
 type VectorStep =
   | { direction: 'inbound'; from: string; message: any; description?: string }

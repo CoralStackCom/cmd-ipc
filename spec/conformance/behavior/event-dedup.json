@@ -8,18 +8,32 @@
     {
       "direction": "inbound",
       "from": "worker-1",
-      "message": { "id": "44444444-4444-4444-8444-444444444444", "type": "event", "eventId": "user.updated", "payload": { "userId": 1 } }
+      "message": {
+        "id": "44444444-4444-4444-8444-444444444444",
+        "type": "event",
+        "eventId": "user.updated",
+        "payload": { "userId": 1 }
+      }
     },
     {
       "description": "First event is forwarded to the other channel as mesh broadcast.",
       "direction": "outbound",
       "to": "worker-2",
-      "expected": { "type": "event", "eventId": "user.updated", "payload": { "userId": 1 } }
+      "expected": {
+        "type": "event",
+        "eventId": "user.updated",
+        "payload": { "userId": 1 }
+      }
     },
     {
       "direction": "inbound",
       "from": "worker-2",
-      "message": { "id": "44444444-4444-4444-8444-444444444444", "type": "event", "eventId": "user.updated", "payload": { "userId": 1 } }
+      "message": {
+        "id": "44444444-4444-4444-8444-444444444444",
+        "type": "event",
+        "eventId": "user.updated",
+        "payload": { "userId": 1 }
+      }
     },
     {
       "description": "Duplicate is dropped — it is NOT re-broadcast back to worker-1.",

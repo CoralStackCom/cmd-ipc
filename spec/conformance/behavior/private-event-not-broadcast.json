@@ -1,7 +1,10 @@
 {
   "description": "Events whose eventId begins with '_' MUST be delivered to local listeners but MUST NOT be broadcast over any channel.",
   "setup": {
-    "registry": { "id": "main", "localEventListeners": ["_local.audit", "user.updated"] },
+    "registry": {
+      "id": "main",
+      "localEventListeners": ["_local.audit", "user.updated"]
+    },
     "peers": [{ "channelId": "worker-1" }]
   },
   "steps": [

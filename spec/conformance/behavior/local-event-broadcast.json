@@ -5,7 +5,10 @@
     "peers": [{ "channelId": "worker-1" }, { "channelId": "worker-2" }]
   },
   "steps": [
-    { "direction": "local-call", "trigger": { "emitEvent": ["user.updated", { "userId": 7 }] } },
+    {
+      "direction": "local-call",
+      "trigger": { "emitEvent": ["user.updated", { "userId": 7 }] }
+    },
     {
       "direction": "outbound",
       "to": "worker-1",

@@ -8,7 +8,14 @@
       "id": "math.add",
       "description": "Add two numbers",
       "schema": {
-        "request":  { "type": "object", "properties": { "a": { "type": "number" }, "b": { "type": "number" } }, "required": ["a", "b"] },
+        "request": {
+          "type": "object",
+          "properties": {
+            "a": { "type": "number" },
+            "b": { "type": "number" }
+          },
+          "required": ["a", "b"]
+        },
         "response": { "type": "number" }
       }
     }

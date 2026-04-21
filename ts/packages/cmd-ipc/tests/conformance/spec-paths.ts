@@ -1,5 +1,5 @@
-import path from 'node:path'
 import fs from 'node:fs'
+import path from 'node:path'
 
 /**
  * Walk up from the vitest CWD (the package root when run via `yarn conformance`)
@@ -9,7 +9,10 @@ function findSpecDir(): string {
   let dir = process.cwd()
   for (let i = 0; i < 10; i++) {
     const candidate = path.join(dir, 'spec')
-    if (fs.existsSync(path.join(candidate, 'schemas')) && fs.existsSync(path.join(candidate, 'conformance'))) {
+    if (
+      fs.existsSync(path.join(candidate, 'schemas')) &&
+      fs.existsSync(path.join(candidate, 'conformance'))
+    ) {
       return candidate
     }
     const parent = path.dirname(dir)

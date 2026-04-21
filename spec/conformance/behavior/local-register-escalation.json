@@ -5,7 +5,10 @@
     "peers": [{ "channelId": "root" }]
   },
   "steps": [
-    { "direction": "local-call", "trigger": { "registerCommand": ["math.add"] } },
+    {
+      "direction": "local-call",
+      "trigger": { "registerCommand": ["math.add"] }
+    },
     {
       "direction": "outbound",
       "to": "root",

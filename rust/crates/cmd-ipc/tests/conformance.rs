@@ -38,7 +38,10 @@ fn spec_dir() -> PathBuf {
             break;
         }
     }
-    panic!("could not locate spec/ directory above {}", manifest.display());
+    panic!(
+        "could not locate spec/ directory above {}",
+        manifest.display()
+    );
 }
 
 fn list_vectors(dir: &Path) -> Vec<PathBuf> {
@@ -74,9 +77,9 @@ fn match_value(
         if let Some(kind) = obj.get("$match") {
             return match kind.as_str() {
                 Some("uuid") => {
-                    let s = actual.as_str().ok_or_else(|| {
-                        format!("{path}: expected UUID string, got {actual}")
-                    })?;
+                    let s = actual
+                        .as_str()
+                        .ok_or_else(|| format!("{path}: expected UUID string, got {actual}"))?;
                     if uuid::Uuid::parse_str(s).is_ok() {
                         Ok(())
                     } else {
@@ -107,7 +110,9 @@ fn match_value(
             if prev == actual {
                 return Ok(());
             }
-            return Err(format!("{path}: $ref {name}: expected {prev}, got {actual}"));
+            return Err(format!(
+                "{path}: $ref {name}: expected {prev}, got {actual}"
+            ));
         }
         if let Some(Value::Array(items)) = obj.get("$unordered") {
             let actual_arr = actual
@@ -337,8 +342,8 @@ fn run_encoding_vector(file: &Path) -> Result<(), String> {
 
     // 3. JSON round-trip via Message (stronger than raw Value round-trip —
     //    exercises serde impls).
-    let reserialized = serde_json::to_value(&parsed)
-        .map_err(|e| format!("serialize roundtrip failed: {e}"))?;
+    let reserialized =
+        serde_json::to_value(&parsed).map_err(|e| format!("serialize roundtrip failed: {e}"))?;
     if reserialized != *message_json {
         return Err(format!(
             "JSON round-trip mismatch:\n  re-serialized: {reserialized}\n  expected     : {message_json}"
@@ -536,7 +541,8 @@ fn run_behavior_vector(file: &Path, pool: &ThreadPool) -> Result<(), String> {
         let ch = MockChannel::new(&ch_id);
         let driver = block_on(registry.register_channel(ch.clone()))
             .map_err(|e| format!("register_channel({ch_id}): {e}"))?;
-        pool.spawn(driver).map_err(|e| format!("spawn driver: {e}"))?;
+        pool.spawn(driver)
+            .map_err(|e| format!("spawn driver: {e}"))?;
         // Drain the auto-sent list.commands.request emitted by register_channel.
         // Give the driver a moment to observe it first.
         let _ = wait_until(|| ch.outbound_len() > 0, Duration::from_millis(100));
@@ -574,7 +580,12 @@ fn run_behavior_vector(file: &Path, pool: &ThreadPool) -> Result<(), String> {
                 }
                 let actual = ch.take_outbound().unwrap();
                 let actual_json = serde_json::to_value(&actual).unwrap();
-                match_value(&step["expected"], &actual_json, &mut captures, &format!("$[{i}]"))?;
+                match_value(
+                    &step["expected"],
+                    &actual_json,
+                    &mut captures,
+                    &format!("$[{i}]"),
+                )?;
             }
             "assert-no-outbound" => {
                 let ch_id = step["to"].as_str().unwrap_or("");
@@ -592,7 +603,11 @@ fn run_behavior_vector(file: &Path, pool: &ThreadPool) -> Result<(), String> {
             "local-call" => {
                 let trigger = &step["trigger"];
                 if let Some(args) = trigger.get("executeCommand").and_then(Value::as_array) {
-                    let cmd = args.first().and_then(Value::as_str).unwrap_or("").to_string();
+                    let cmd = args
+                        .first()
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string();
                     let req = args.get(1).cloned().unwrap_or(Value::Null);
                     let (tx, rx) = oneshot::channel::<Result<Value, LocalCallErr>>();
                     let registry_clone = registry.clone();
@@ -604,13 +619,22 @@ fn run_behavior_vector(file: &Path, pool: &ThreadPool) -> Result<(), String> {
                     .map_err(|e| format!("{tag}: spawn: {e}"))?;
                     pending_result = Some(rx);
                 } else if let Some(args) = trigger.get("emitEvent").and_then(Value::as_array) {
-                    let eid = args.first().and_then(Value::as_str).unwrap_or("").to_string();
+                    let eid = args
+                        .first()
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string();
                     let payload = args.get(1).cloned().unwrap_or(Value::Null);
                     registry
                         .emit_event(&eid, payload)
                         .map_err(|e| format!("{tag}: emit_event: {e}"))?;
-                } else if let Some(args) = trigger.get("registerCommand").and_then(Value::as_array) {
-                    let id = args.first().and_then(Value::as_str).unwrap_or("").to_string();
+                } else if let Some(args) = trigger.get("registerCommand").and_then(Value::as_array)
+                {
+                    let id = args
+                        .first()
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string();
                     let def = CommandDef {
                         id: id.clone(),
                         description: None,
@@ -662,9 +686,7 @@ fn run_behavior_vector(file: &Path, pool: &ThreadPool) -> Result<(), String> {
                 if let Some(expected_err) = step.get("expectedError") {
                     match result {
                         Ok(v) => {
-                            return Err(format!(
-                                "{tag}: expected error but got ok value {v}"
-                            ));
+                            return Err(format!("{tag}: expected error but got ok value {v}"));
                         }
                         Err(e) => {
                             if let Some(code) = expected_err.get("code").and_then(Value::as_str) {
@@ -791,7 +813,11 @@ fn run_suite<F: Fn(&Path) -> Result<(), String>>(
 fn encoding_vectors() {
     let dir = spec_dir().join("conformance").join("encoding");
     let files = list_vectors(&dir);
-    assert!(!files.is_empty(), "no encoding vectors in {}", dir.display());
+    assert!(
+        !files.is_empty(),
+        "no encoding vectors in {}",
+        dir.display()
+    );
     let failures = run_suite("encoding", files, run_encoding_vector);
     if !failures.is_empty() {
         panic!("{} encoding vector(s) failed", failures.len());
@@ -802,7 +828,11 @@ fn encoding_vectors() {
 fn behavior_vectors() {
     let dir = spec_dir().join("conformance").join("behavior");
     let files = list_vectors(&dir);
-    assert!(!files.is_empty(), "no behavior vectors in {}", dir.display());
+    assert!(
+        !files.is_empty(),
+        "no behavior vectors in {}",
+        dir.display()
+    );
     let pool = ThreadPool::new().expect("ThreadPool");
     let failures = run_suite("behavior", files, |f| run_behavior_vector(f, &pool));
     if !failures.is_empty() {

@@ -1,9 +1,6 @@
 import * as v from 'valibot'
 
-import {
-  CommandMessageSchema,
-  MessageType,
-} from '../../src/registry/command-message-schemas'
+import { CommandMessageSchema, MessageType } from '../../src/registry/command-message-schemas'
 import { deepEqual } from './matchers'
 import { ENCODING_DIR, listVectors, readJson } from './spec-paths'
 

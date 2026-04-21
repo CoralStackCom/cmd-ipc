@@ -33,12 +33,7 @@ function isPattern(v: unknown, key: string): boolean {
  * Match an actual value against an expected value that may contain patterns.
  * Mutates `captures` on `$capture`. Throws MatchError on mismatch.
  */
-export function match(
-  expected: unknown,
-  actual: unknown,
-  captures: CaptureBag,
-  path = '$',
-): void {
+export function match(expected: unknown, actual: unknown, captures: CaptureBag, path = '$'): void {
   // Patterns
   if (isObj(expected)) {
     if (isPattern(expected, '$match')) {
