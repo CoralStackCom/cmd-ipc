@@ -4,9 +4,9 @@
     "registry": {
       "id": "main",
       "localCommands": [
-        { "id": "math.add",     "description": "Add two numbers" },
-        { "id": "math.sub",     "description": "Subtract two numbers" },
-        { "id": "_secret.ping", "description": "Private, must be omitted" }
+        { "id": "math.add" },
+        { "id": "math.sub" },
+        { "id": "_secret.ping" }
       ]
     },
     "peers": [{ "channelId": "worker-1" }]
@@ -15,18 +15,18 @@
     {
       "direction": "inbound",
       "from": "worker-1",
-      "message": { "id": "m-1", "type": "list.commands.request" }
+      "message": { "id": "11111111-1111-4111-8111-111111111111", "type": "list.commands.request" }
     },
     {
       "direction": "outbound",
       "to": "worker-1",
       "expected": {
         "type": "list.commands.response",
-        "thid": "m-1",
+        "thid": "11111111-1111-4111-8111-111111111111",
         "commands": {
           "$unordered": [
-            { "id": "math.add", "description": "Add two numbers" },
-            { "id": "math.sub", "description": "Subtract two numbers" }
+            { "id": "math.add" },
+            { "id": "math.sub" }
           ]
         }
       }

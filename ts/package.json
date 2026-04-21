@@ -21,6 +21,7 @@
     "test": "vitest",
     "test:ui": "vitest --ui",
     "test:run": "vitest run",
+    "conformance": "yarn workspace @coralstack/cmd-ipc vitest run tests/conformance",
     "release": "node scripts/release.mjs"
   },
   "workspaces": {

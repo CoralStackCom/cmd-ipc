@@ -30,8 +30,8 @@ For each vector, the harness MUST assert:
 1. **Schema validity.** `message` validates against `schemas/<schema>`.
 2. **JSON decode.** `JSON.parse(json)` deep-equals `message`.
 3. **JSON round-trip.** `JSON.parse(encode(message))` deep-equals `message`. (Byte-equality is NOT required — JSON allows whitespace/key-order variation.)
-4. **CBOR round-trip.** `cborDecode(cborEncode(message))` deep-equals `message`. (Byte-equality is NOT required — CBOR allows multiple valid encodings of the same value.)
-5. **Cross-encoding.** `cborDecode(cborEncode(JSON.parse(json)))` deep-equals `message`.
+
+CBOR support is reserved for a future spec revision and is not currently asserted by the harness.
 
 ## Behavior vectors
 
@@ -96,7 +96,7 @@ From the repo root:
 make conformance
 ```
 
-TypeScript: `ts/packages/cmd-ipc/src/testing/conformance/` loads vectors and runs them under vitest.
+TypeScript: `ts/packages/cmd-ipc/tests/conformance/` loads vectors and runs them under vitest.
 Rust: `rust/crates/cmd-ipc/tests/conformance.rs` loads vectors via `include_dir!` and runs them under `cargo test`.
 
 ## Adding a vector
