@@ -82,8 +82,18 @@ struct PendingExecute {
     target_channel: String,
 }
 
+/// Outcome delivered to the caller awaiting a `register.command.request`
+/// reply. The peer's `RegisterResult` is wrapped so the registry can
+/// synthesize timeout / disconnect errors distinguishable from the
+/// wire-level duplicate-command case.
+enum RegisterOutcome {
+    Wire(RegisterResult),
+    Timeout,
+    Disconnected,
+}
+
 struct PendingRegister {
-    tx: oneshot::Sender<RegisterResult>,
+    tx: oneshot::Sender<RegisterOutcome>,
     target_channel: String,
 }
 
@@ -127,6 +137,27 @@ pub struct CommandRegistry {
 
 impl CommandRegistry {
     pub fn new(cfg: Config) -> Self {
+        // On TTL expiry, deliver an explicit Timeout outcome on the
+        // pending oneshot so the caller's `rx.await` resolves to
+        // `CommandError::Timeout` rather than blocking forever (or
+        // collapsing to a generic `ChannelDisconnected` when the tx is
+        // dropped). Eviction is lazy — driven by `sweep_expired()`
+        // calls in the driver loop and registry hot paths.
+        let execute_replies =
+            TtlMap::new(cfg.request_ttl).with_on_expire(|_, pending: PendingExecute| {
+                let _ = pending.tx.send(ExecuteResult::Err {
+                    ok: False,
+                    error: ExecuteError {
+                        code: ExecuteErrorCode::Timeout,
+                        message: "request timed out".into(),
+                    },
+                });
+            });
+        let register_replies =
+            TtlMap::new(cfg.request_ttl).with_on_expire(|_, pending: PendingRegister| {
+                let _ = pending.tx.send(RegisterOutcome::Timeout);
+            });
+
         let inner = Arc::new(Inner {
             id: cfg.id.unwrap_or_else(|| Uuid::new_v4().to_string()),
             router_channel: cfg.router_channel,
@@ -134,8 +165,8 @@ impl CommandRegistry {
             remote: Mutex::new(HashMap::new()),
             remote_defs: Mutex::new(HashMap::new()),
             channels: Mutex::new(HashMap::new()),
-            execute_replies: TtlMap::new(cfg.request_ttl),
-            register_replies: TtlMap::new(cfg.request_ttl),
+            execute_replies,
+            register_replies,
             routes: TtlMap::new(cfg.request_ttl),
             seen_events: TtlMap::new(cfg.event_ttl),
             event_listeners: Mutex::new(HashMap::new()),
@@ -246,6 +277,8 @@ impl CommandRegistry {
         def: CommandDef,
         is_private: bool,
     ) -> Result<(), CommandError> {
+        self.inner.execute_replies.sweep_expired();
+        self.inner.register_replies.sweep_expired();
         // Duplicate check against the local table.
         if self.inner.local.lock().contains_key(&id) {
             return Err(CommandError::DuplicateCommand(id));
@@ -272,15 +305,18 @@ impl CommandRegistry {
                         })
                         .map_err(|_| CommandError::ChannelDisconnected)?;
                     match rx.await {
-                        Ok(RegisterResult::Ok { .. }) => {}
-                        Ok(RegisterResult::Err { error, .. }) => {
+                        Ok(RegisterOutcome::Wire(RegisterResult::Ok { .. })) => {}
+                        Ok(RegisterOutcome::Wire(RegisterResult::Err { error, .. })) => {
                             return Err(match error {
                                 RegisterErrorCode::DuplicateCommand => {
                                     CommandError::DuplicateCommand(id)
                                 }
                             });
                         }
-                        Err(_) => return Err(CommandError::ChannelDisconnected),
+                        Ok(RegisterOutcome::Timeout) => return Err(CommandError::Timeout),
+                        Ok(RegisterOutcome::Disconnected) | Err(_) => {
+                            return Err(CommandError::ChannelDisconnected);
+                        }
                     }
                 }
             }
@@ -334,6 +370,14 @@ impl CommandRegistry {
         let ch = channel;
         Ok(async move {
             while let Some(msg) = ch.recv().await {
+                // Opportunistic TTL sweep: any registry activity
+                // triggers a pass over the pending-reply / route maps
+                // so timed-out entries fire their on_expire callbacks
+                // (delivering Timeout to waiting callers). Cheap —
+                // O(n) over maps that are normally tiny.
+                inner.execute_replies.sweep_expired();
+                inner.register_replies.sweep_expired();
+                inner.routes.sweep_expired();
                 Inner::handle_message(inner.clone(), ch.clone(), msg).await;
             }
             Inner::handle_channel_close(&inner, ch.id());
@@ -398,6 +442,10 @@ impl CommandRegistry {
         command_id: String,
         request: Value,
     ) -> Result<Option<Value>, CommandError> {
+        // Flush any expired pending replies so stale entries fire their
+        // Timeout on_expire before we enqueue a new one.
+        self.inner.execute_replies.sweep_expired();
+        self.inner.register_replies.sweep_expired();
         // 1) Local handler wins.
         let local_handler = self
             .inner
@@ -646,7 +694,7 @@ impl Inner {
             }
             Message::RegisterCommandResponse { thid, response, .. } => {
                 if let Some(pending) = inner.register_replies.remove(&thid) {
-                    let _ = pending.tx.send(response);
+                    let _ = pending.tx.send(RegisterOutcome::Wire(response));
                 }
             }
             Message::ListCommandsRequest { id } => {
@@ -735,23 +783,37 @@ impl Inner {
             return;
         }
 
-        // Already known in the remote table (from another channel)?
-        let dup_remote = inner
-            .remote
-            .lock()
-            .get(&command_id)
-            .map(|existing| existing != &channel_id)
-            .unwrap_or(false);
-        if dup_remote {
-            let _ = channel.send(Message::RegisterCommandResponse {
-                id: MessageId::new_v4(),
-                thid: req_id,
-                response: RegisterResult::Err {
-                    ok: False,
-                    error: RegisterErrorCode::DuplicateCommand,
-                },
-            });
-            return;
+        // Already known in the remote table?
+        // - Same channel re-advertising: short-circuit with a success
+        //   ack, do NOT re-escalate upstream. A re-escalation would
+        //   bubble up as a duplicate rejection from the router and
+        //   spuriously fail a legitimate re-registration (common when
+        //   a plugin host re-advertises its command list).
+        // - Different channel claiming the same id: reject as duplicate.
+        let existing_owner = inner.remote.lock().get(&command_id).cloned();
+        match existing_owner {
+            Some(owner) if owner == channel_id => {
+                // Refresh the cached def and re-ack. No upstream traffic.
+                inner.remote_defs.lock().insert(command_id, command);
+                let _ = channel.send(Message::RegisterCommandResponse {
+                    id: MessageId::new_v4(),
+                    thid: req_id,
+                    response: RegisterResult::Ok { ok: True },
+                });
+                return;
+            }
+            Some(_) => {
+                let _ = channel.send(Message::RegisterCommandResponse {
+                    id: MessageId::new_v4(),
+                    thid: req_id,
+                    response: RegisterResult::Err {
+                        ok: False,
+                        error: RegisterErrorCode::DuplicateCommand,
+                    },
+                });
+                return;
+            }
+            None => {}
         }
 
         // Escalate upstream if we have a router.
@@ -777,8 +839,8 @@ impl Inner {
                     {
                         let up = rx.await;
                         match up {
-                            Ok(RegisterResult::Ok { .. }) => {}
-                            Ok(RegisterResult::Err { error, .. }) => {
+                            Ok(RegisterOutcome::Wire(RegisterResult::Ok { .. })) => {}
+                            Ok(RegisterOutcome::Wire(RegisterResult::Err { error, .. })) => {
                                 let _ = channel.send(Message::RegisterCommandResponse {
                                     id: MessageId::new_v4(),
                                     thid: req_id,
@@ -786,7 +848,17 @@ impl Inner {
                                 });
                                 return;
                             }
-                            Err(_) => {
+                            // Timeout / disconnected upstream: we have no
+                            // wire-level error code for these on the
+                            // register response, so surface them as
+                            // duplicate_command to match the prior
+                            // behaviour. The escalating caller's own
+                            // register_command call will see the correct
+                            // Timeout / ChannelDisconnected via its own
+                            // pending entry.
+                            Ok(RegisterOutcome::Timeout)
+                            | Ok(RegisterOutcome::Disconnected)
+                            | Err(_) => {
                                 let _ = channel.send(Message::RegisterCommandResponse {
                                     id: MessageId::new_v4(),
                                     thid: req_id,
@@ -1024,11 +1096,7 @@ impl Inner {
             .snapshot_keys_where(|v| v.target_channel == channel_id);
         for id in reg_ids {
             if let Some(pending) = inner.register_replies.remove(&id) {
-                // The Err channel is a oneshot drop; we deliberately do
-                // not synthesize a wire-level error here, since the
-                // caller's await will see `Err(Canceled)` which our
-                // register path maps to `ChannelDisconnected`.
-                drop(pending);
+                let _ = pending.tx.send(RegisterOutcome::Disconnected);
             }
         }
 

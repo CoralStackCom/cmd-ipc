@@ -73,10 +73,8 @@ Building applications that span multiple processes, workers, or services often m
   <TabItem label="Rust" icon="seti:rust">
     ```rust
     use coralstack_cmd_ipc::prelude::*;
-    use schemars::JsonSchema;
-    use serde::{Deserialize, Serialize};
 
-    #[derive(Deserialize, Serialize, JsonSchema)]
+    #[payload]
     struct AddReq { a: i64, b: i64 }
 
     struct MathService;
@@ -92,10 +90,10 @@ Building applications that span multiple processes, workers, or services often m
     let registry = CommandRegistry::new(Config::default());
     MathService.register(&registry).await?;
 
-    let result: i64 = registry
-        .execute_command("math.add", AddReq { a: 5, b: 3 })
+    let sum = registry
+        .execute::<math_service::Add>(AddReq { a: 5, b: 3 })
         .await?;
-    // result = 8
+    // sum: i64 = 8
     ```
   </TabItem>
 </Tabs>
