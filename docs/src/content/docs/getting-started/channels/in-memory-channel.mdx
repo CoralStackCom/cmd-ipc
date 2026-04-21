@@ -1,0 +1,87 @@
+---
+title: InMemoryChannel
+description: Same-process registry-to-registry transport (Rust)
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="note">
+  `InMemoryChannel` is Rust-only. The TypeScript package uses `MessagePortChannel` with `MessageChannel()` for the equivalent in-process use case.
+</Aside>
+
+`InMemoryChannel` is an in-process bidirectional transport for wiring two `CommandRegistry` instances together without touching the OS. It's the Rust equivalent of pairing two `MessagePort`s inside a single Node.js process — ideal for tests, examples, and single-binary apps that still want registry isolation (e.g. plugin hosts, actor-style decomposition).
+
+## Pair two registries
+
+`InMemoryChannel::pair(local_id, peer_id)` returns two halves already cross-wired. Register one on each registry:
+
+```rust
+use coralstack_cmd_ipc::prelude::*;
+use std::sync::Arc;
+
+let (ch_for_root, ch_for_worker) = InMemoryChannel::pair("worker", "root");
+
+let root = CommandRegistry::new(Config { id: Some("root".into()), ..Default::default() });
+let worker = CommandRegistry::new(Config {
+    id: Some("worker".into()),
+    router_channel: Some("root".into()),
+    ..Default::default()
+});
+
+let driver_root = root.register_channel(ch_for_root as Arc<dyn CommandChannel>).await?;
+let driver_worker = worker.register_channel(ch_for_worker as Arc<dyn CommandChannel>).await?;
+
+// Spawn the driver futures on any executor (tokio, futures::executor::ThreadPool, etc.)
+pool.spawn(driver_root)?;
+pool.spawn(driver_worker)?;
+```
+
+The first argument to `pair` is the **ID the peer will see** for its channel; the second is this side's ID for the peer. In the snippet above, `ch_for_root` is registered on `root` with peer ID `"worker"`, and vice versa.
+
+## Runtime-agnostic driver futures
+
+`register_channel` returns an opaque `Future<Output = ()>` rather than spawning anything itself — Rust is runtime-agnostic. Spawn it on whatever executor you use:
+
+```rust
+// tokio
+tokio::spawn(driver_root);
+
+// futures::executor::ThreadPool
+pool.spawn(driver_root)?;
+
+// async-std, smol, etc. — all work
+```
+
+The future resolves when the channel closes.
+
+## Escalating commands across the pair
+
+`router_channel` on the child registry's `Config` turns the pair into a Tree-Mesh — unknown commands escalate from `worker` up to `root`. Commands registered on one side become callable from the other.
+
+```rust
+MathService.register_all(&worker).await?;
+GreetService.register_all(&root).await?;
+
+// Called on the root, but handled on the worker:
+let sum: i64 = root.execute::<MathAdd>(AddReq { a: 1, b: 2 }).await?;
+
+// Called on the worker, but handled on the root:
+let hi: String = worker.execute::<GreetHello>("Ada".into()).await?;
+```
+
+## Events
+
+Events emitted on one side fan out to listeners on the other. Deduplication uses the `event_ttl` from `Config`.
+
+```rust
+worker.add_event_listener("user.updated", |payload| {
+    println!("[worker] saw: {payload}");
+});
+
+root.emit_event("user.updated", serde_json::json!({ "id": 42 }))?;
+// -> "[worker] saw: {\"id\":42}"
+```
+
+## Full worked example
+
+See [examples/rust/multi-service](/cmd-ipc/examples/rust/multi-service/) for a complete REPL-driven walkthrough using `InMemoryChannel::pair` across two registries with cross-process routing and event fan-out.

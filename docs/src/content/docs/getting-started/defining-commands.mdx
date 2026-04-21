@@ -1,0 +1,142 @@
+---
+title: Defining Commands
+description: Register commands in TypeScript and Rust
+---
+
+import { Tabs, TabItem, Aside } from '@astrojs/starlight/components';
+
+A command is an async function with an ID. cmd-ipc provides the same ergonomic registration story in both languages: attach an attribute (or decorator) to the function, then register the containing instance on the registry.
+
+## The basic shape
+
+<Tabs syncKey="lang">
+  <TabItem label="TypeScript" icon="seti:typescript">
+    ```typescript
+    import { Command, CommandRegistry, registerCommands } from '@coralstack/cmd-ipc'
+
+    class MathService {
+      @Command('math.add', 'Add two integers')
+      add({ a, b }: { a: number; b: number }): number {
+        return a + b
+      }
+    }
+
+    const registry = new CommandRegistry({ id: 'main' })
+    registerCommands([new MathService()], registry)
+    ```
+  </TabItem>
+  <TabItem label="Rust" icon="seti:rust">
+    ```rust
+    use coralstack_cmd_ipc::prelude::*;
+    use schemars::JsonSchema;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Deserialize, Serialize, JsonSchema)]
+    struct AddReq { a: i64, b: i64 }
+
+    struct MathService;
+
+    #[commands]
+    impl MathService {
+        #[command("math.add", description = "Add two integers")]
+        async fn add(&self, req: AddReq) -> Result<i64, CommandError> {
+            Ok(req.a + req.b)
+        }
+    }
+
+    let registry = CommandRegistry::new(Config::default());
+    MathService.register_all(&registry).await?;
+    ```
+  </TabItem>
+</Tabs>
+
+Both snippets register a single `math.add` command with identical wire-level semantics — the JSON Schema emitted on the wire is byte-compatible between the two.
+
+## Declaring the schema
+
+TypeScript uses <a href="https://valibot.dev/" target="_blank" rel="noopener">Valibot</a> schemas; Rust uses <a href="https://docs.rs/schemars" target="_blank" rel="noopener">schemars</a> derived from `serde`-deserializable request types. In both cases the registry advertises a standards-compliant JSON Schema for each command.
+
+<Tabs syncKey="lang">
+  <TabItem label="TypeScript" icon="seti:typescript">
+    ```typescript
+    import * as v from 'valibot'
+    import type { CommandSchemaMap } from '@coralstack/cmd-ipc'
+
+    export const MathSchema = {
+      'math.add': {
+        description: 'Add two integers',
+        request: v.object({ a: v.number(), b: v.number() }),
+        response: v.number(),
+      },
+    } as const satisfies CommandSchemaMap
+
+    const registry = new CommandRegistry({
+      id: 'main',
+      schemas: { commands: MathSchema },
+    })
+    ```
+
+    Types flow automatically into `executeCommand` at the call site. See [Type Safety](/cmd-ipc/getting-started/type-safety/) for loose/strict/mixed modes.
+  </TabItem>
+  <TabItem label="Rust" icon="seti:rust">
+    ```rust
+    use schemars::JsonSchema;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Deserialize, Serialize, JsonSchema)]
+    struct AddReq { a: i64, b: i64 }
+    ```
+
+    The Rust types **are** the schema. The `#[command]` macro generates a `Command` impl whose `schema()` method returns `schemars::schema_for!(AddReq)`. There is no "loose mode" equivalent — if you need dynamic dispatch, call `execute_command::<Value, Value>(id, payload)` with `serde_json::Value`.
+  </TabItem>
+</Tabs>
+
+## Private commands
+
+Commands whose ID starts with `_` are **private** — they stay local to the registering process and are never announced to connected channels or exposed as MCP tools.
+
+<Tabs syncKey="lang">
+  <TabItem label="TypeScript" icon="seti:typescript">
+    ```typescript
+    class LocalOps {
+      @Command('_main.log', 'Internal logger')
+      log({ message }: { message: string }) {
+        console.log(message)
+      }
+    }
+    ```
+  </TabItem>
+  <TabItem label="Rust" icon="seti:rust">
+    ```rust
+    #[commands]
+    impl LocalOps {
+        #[command("_main.log")]
+        async fn log(&self, msg: String) -> Result<(), CommandError> {
+            eprintln!("{msg}");
+            Ok(())
+        }
+    }
+    ```
+  </TabItem>
+</Tabs>
+
+## Free-function shape (Rust only)
+
+Rust also supports attaching `#[command]` directly to an `async fn`. The macro emits a `register_<fn_name>` entry point — useful for one-offs that don't warrant a service struct:
+
+```rust
+#[command("greet")]
+async fn greet(name: String) -> Result<String, CommandError> {
+    Ok(format!("hello, {name}"))
+}
+
+register_greet(&registry).await?;
+```
+
+TypeScript has no equivalent — the `@Command` decorator requires a class to anchor the `reflect-metadata` lookup.
+
+## Next steps
+
+- [Type Safety](/cmd-ipc/getting-started/type-safety/) — loose vs strict mode (TS); `execute::<C>` vs `execute_command::<Req, Res>` (Rust)
+- [Channels Overview](/cmd-ipc/getting-started/channels/) — how to connect registries once commands are registered
+- [Quick Start](/cmd-ipc/getting-started/quick-start/) — end-to-end walkthrough

@@ -7,17 +7,20 @@ import type { SidebarItem, SidebarSection } from '../config/sidebar'
 
 const CMD_IPC_DESCRIPTION = `# cmd-ipc Documentation
 
-cmd-ipc is an open-source Inter-Process Communication (IPC) library for TypeScript
-that enables type-safe command execution across multiple processes and services.
+cmd-ipc is an open-source, polyglot Inter-Process Communication (IPC) library.
+It ships as both a TypeScript package (@coralstack/cmd-ipc) and a Rust crate
+(coralstack-cmd-ipc) that speak a byte-identical wire protocol, enabling
+type-safe command execution across processes, workers, and services.
 
 ## Core Benefits
 
-- **Type Safety**: Full TypeScript inference with Valibot schema validation.
-- **Multi-Process**: Works with Web Workers, Electron, Node.js worker_threads, and HTTP.
+- **Type Safety**: TypeScript inference via Valibot, or compile-time-checked Rust types via schemars. Runtime validation in both.
+- **Polyglot**: Identical wire protocol — a Rust registry can serve a Node.js client and vice versa.
+- **Multi-Process**: Web Workers, Electron, Node.js worker_threads, HTTP, MCP, in-memory.
 - **Flexible Architecture**: Hybrid Tree-Mesh routing with optional command escalation.
-- **Schema Generation**: CLI tool generates TypeScript types from remote services.
+- **Schema Generation**: CLI (TypeScript) generates client schemas from remote services.
 - **Event Broadcasting**: Fire-and-forget events across all connected channels.
-- **Decorator Support**: Use @Command decorator to register class methods as handlers.
+- **Ergonomic Registration**: @Command decorator (TS) or #[command] / #[commands] macros (Rust).
 
 ## Documentation Sitemap
 

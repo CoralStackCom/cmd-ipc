@@ -3,11 +3,38 @@ title: Type Safety
 description: Leveraging cmd-ipc's type system for robust applications
 ---
 
-import { Aside } from '@astrojs/starlight/components';
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
-cmd-ipc provides full TypeScript type safety through <a href="https://valibot.dev/" target="_blank" rel="noopener">Valibot</a> schemas. This gives you compile-time type checking and runtime validation.
+cmd-ipc enforces types at both compile time and runtime. The TypeScript implementation offers loose, strict, and mixed modes layered via <a href="https://valibot.dev/" target="_blank" rel="noopener">Valibot</a> schemas. Rust is strict-only — the `Request`/`Response` types on the `Command` trait **are** the schema.
 
-## Loose vs Strict Mode
+<Tabs syncKey="lang">
+  <TabItem label="TypeScript" icon="seti:typescript">
+    Full TypeScript inference through Valibot schemas. Compile-time type checking plus runtime validation.
+  </TabItem>
+  <TabItem label="Rust" icon="seti:rust">
+    The `Command` trait pins `Request` and `Response` types at compile time:
+
+    ```rust
+    impl Command for MathAdd {
+        const ID: &'static str = "math.add";
+        type Request = AddReq;   // must be Deserialize + JsonSchema
+        type Response = i64;     // must be Serialize
+    }
+
+    // Strict call — request and response types checked at compile time
+    let sum: i64 = registry.execute::<MathAdd>(AddReq { a: 1, b: 2 }).await?;
+
+    // "Loose" equivalent — opt into dynamic dispatch with serde_json::Value
+    let v: serde_json::Value = registry
+        .execute_command::<serde_json::Value, serde_json::Value>("math.add", payload)
+        .await?;
+    ```
+
+    `schemars::schema_for!(AddReq)` produces the JSON Schema the registry advertises on the wire — byte-compatible with what the TypeScript side sends via Valibot. The remainder of this page covers TypeScript-specific modes and helpers.
+  </TabItem>
+</Tabs>
+
+## Loose vs Strict Mode (TypeScript)
 
 cmd-ipc operates in two modes depending on whether you provide schemas:
 

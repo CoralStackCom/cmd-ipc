@@ -33,6 +33,8 @@ export const sidebar: SidebarSection[] = [
     items: [
       { label: 'Installation', slug: 'getting-started/installation' },
       { label: 'Quick Start', slug: 'getting-started/quick-start' },
+      { label: 'Defining Commands', slug: 'getting-started/defining-commands' },
+      { label: 'Type Safety', slug: 'getting-started/type-safety' },
       {
         label: 'Channels',
         items: [
@@ -42,10 +44,13 @@ export const sidebar: SidebarSection[] = [
             slug: 'getting-started/channels/message-port-channel',
           },
           { label: 'HTTPChannel', slug: 'getting-started/channels/http-channel' },
+          {
+            label: 'InMemoryChannel',
+            slug: 'getting-started/channels/in-memory-channel',
+          },
           { label: 'MCPChannel', slug: 'getting-started/channels/mcp-channel' },
         ],
       },
-      { label: 'Type Safety', slug: 'getting-started/type-safety' },
       { label: 'CLI', slug: 'getting-started/cli' },
     ],
   },
@@ -53,14 +58,31 @@ export const sidebar: SidebarSection[] = [
     label: 'Examples',
     items: [
       { label: 'Overview', slug: 'examples/overview' },
-      { label: 'Web Workers', slug: 'examples/web-workers' },
-      { label: 'Electron', slug: 'examples/electron' },
-      { label: 'Cloudflare Workers', slug: 'examples/cloudflare-workers' },
-      { label: 'AI Agent MCP', slug: 'examples/mcp-agent' },
+      {
+        label: 'TypeScript',
+        items: [
+          { label: 'Web Workers', slug: 'examples/typescript/web-workers' },
+          { label: 'Electron', slug: 'examples/typescript/electron' },
+          {
+            label: 'Cloudflare Workers',
+            slug: 'examples/typescript/cloudflare-workers',
+          },
+          { label: 'AI Agent MCP', slug: 'examples/typescript/mcp-agent' },
+        ],
+      },
+      {
+        label: 'Rust',
+        items: [
+          { label: 'Multi-Service', slug: 'examples/rust/multi-service' },
+        ],
+      },
     ],
   },
   {
     label: 'Reference',
-    autogenerate: { directory: 'api' },
+    items: [
+      { label: 'TypeScript API', slug: 'api/typescript' },
+      { label: 'Rust API', slug: 'api/rust' },
+    ],
   },
 ]

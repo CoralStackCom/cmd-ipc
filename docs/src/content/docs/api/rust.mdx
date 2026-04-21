@@ -1,0 +1,145 @@
+---
+title: Rust API Reference
+description: API reference for coralstack-cmd-ipc (Rust)
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Reference for the Rust crates. Full rustdoc with all generics, trait bounds, and method signatures is published on docs.rs — this page is a high-level cheatsheet.
+
+| Crate | docs.rs | crates.io | Purpose |
+|---|---|---|---|
+| `coralstack-cmd-ipc` | [docs.rs](https://docs.rs/coralstack-cmd-ipc) | [crates.io](https://crates.io/crates/coralstack-cmd-ipc) | Core registry, channels, protocol |
+| `coralstack-cmd-ipc-macros` | [docs.rs](https://docs.rs/coralstack-cmd-ipc-macros) | [crates.io](https://crates.io/crates/coralstack-cmd-ipc-macros) | `#[command]` / `#[commands]` attribute macros |
+| `coralstack-cmd-ipc-mcp` | [docs.rs](https://docs.rs/coralstack-cmd-ipc-mcp) | [crates.io](https://crates.io/crates/coralstack-cmd-ipc-mcp) | MCP server adapter (via `rmcp`) |
+
+<Aside type="tip">
+  The core crate re-exports `coralstack-cmd-ipc-macros`, so listing just `coralstack-cmd-ipc` as a dependency is enough — you get the macros, prelude, and runtime in one.
+</Aside>
+
+## Prelude
+
+```rust
+use coralstack_cmd_ipc::prelude::*;
+```
+
+Brings into scope: `command`, `commands`, `ChannelError`, `Command`, `CommandChannel`, `CommandDef`, `CommandError`, `CommandRegistry`, `CommandSchema`, `Config`, `InMemoryChannel`.
+
+## CommandRegistry
+
+The central hub — mirrors the TypeScript `CommandRegistry` 1:1.
+
+```rust
+use coralstack_cmd_ipc::prelude::*;
+use std::time::Duration;
+
+let registry = CommandRegistry::new(Config {
+    id: Some("main".into()),
+    router_channel: None,
+    request_ttl: Duration::from_secs(30),
+    event_ttl: Duration::from_secs(5),
+});
+```
+
+### Config
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | `Option<String>` | Registry identifier for logging |
+| `router_channel` | `Option<String>` | Channel ID for escalating unknown commands |
+| `request_ttl` | `Duration` | Timeout for pending requests |
+| `event_ttl` | `Duration` | TTL for event deduplication |
+
+### Methods
+
+| Method | Mirrors TS | Notes |
+|---|---|---|
+| `register_command(def, handler)` | `registerCommand` | Boxes the handler internally |
+| `register_channel(channel)` | `registerChannel` | Returns a driver future — spawn it on your executor |
+| `execute_command::<Req, Res>(id, req)` | loose `executeCommand` | Use `::<Value, Value>` for fully dynamic dispatch |
+| `execute::<C>(req)` | strict `executeCommand<K>` | `C: Command` pins request and response types |
+| `emit_event(event, payload)` | `emitEvent` | Returns `Result` (serde errors surface here) |
+| `add_event_listener(event, cb)` | `addEventListener` | Returns `impl FnOnce()` unsubscribe |
+| `list_commands()` | `listCommands` | Returns `Vec<CommandDef>` |
+| `list_channels()` | `listChannels` | Returns connected channel IDs |
+| `dispose()` | `dispose` | Closes all channels, drops commands |
+| `id()` | `id` property | Registry identifier |
+
+<Aside type="note">
+  Commands owned by a channel are cleaned up automatically when the channel closes. There is no `unregister_command`, matching the TS reference. For dynamic lifecycle-scoped command groups, implement a custom `CommandChannel` that advertises its commands on connect.
+</Aside>
+
+## Command trait
+
+Strict-mode typing — the Rust equivalent of `CommandSchemaMap`.
+
+```rust
+use coralstack_cmd_ipc::prelude::*;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
+#[derive(Deserialize, Serialize, JsonSchema)]
+struct AddReq { a: i64, b: i64 }
+
+struct Add;
+
+impl Command for Add {
+    const ID: &'static str = "math.add";
+    type Request = AddReq;
+    type Response = i64;
+}
+```
+
+Then execute in strict mode:
+
+```rust
+let result: i64 = registry.execute::<Add>(AddReq { a: 2, b: 3 }).await?;
+```
+
+The `#[command]` / `#[commands]` macros generate the `Command` impl automatically — see [Defining Commands](/cmd-ipc/getting-started/defining-commands/).
+
+## CommandChannel trait
+
+```rust
+#[async_trait]
+pub trait CommandChannel: Send + Sync {
+    fn id(&self) -> &str;
+    async fn send(&self, message: Message) -> Result<(), ChannelError>;
+    fn subscribe(&self) -> Receiver<Message>;
+    async fn close(&self) -> Result<(), ChannelError>;
+}
+```
+
+Built-in implementation:
+
+- **`InMemoryChannel`** — `InMemoryChannel::pair(local_id, peer_id)` returns two `Arc<InMemoryChannel>` halves wired together. Ideal for same-process tests and single-process multi-registry setups. See [InMemoryChannel](/cmd-ipc/getting-started/channels/in-memory-channel/).
+
+Implement the trait for custom transports (WebSocket, gRPC, stdio, etc.). The wire `Message` type is byte-identical to the TypeScript union — see [Protocol](/cmd-ipc/introduction/protocol/).
+
+## Macros
+
+Re-exported from `coralstack-cmd-ipc-macros`. See [Defining Commands](/cmd-ipc/getting-started/defining-commands/) for full usage.
+
+- `#[command("id", description = "...")]` — attribute on a free `async fn` or an `impl` method
+- `#[commands]` — attribute on an `impl` block; registers every `#[command]`-tagged method via `MyService.register_all(&registry).await?`
+
+## Errors
+
+| Type | Purpose |
+|---|---|
+| `CommandError` | Returned from command handlers; serialized as `ExecuteError` on the wire |
+| `ChannelError` | Transport-level failures |
+| `ExecuteErrorCode` | Enum of wire-level error codes (`CommandNotFound`, `ValidationError`, etc.) |
+| `RegisterErrorCode` | Enum of registration error codes (`CommandAlreadyRegistered`) |
+
+## MCP adapter
+
+`coralstack-cmd-ipc-mcp::McpServerChannel` exposes a registry's public commands as MCP tools via the `rmcp` SDK.
+
+```rust
+use coralstack_cmd_ipc_mcp::McpServerChannel;
+
+McpServerChannel::new(registry).serve_stdio().await?;
+```
+
+Private commands (prefixed with `_`) are never exposed as tools.

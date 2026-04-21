@@ -5,33 +5,54 @@ description: Explore cmd-ipc example projects
 
 import { Card, CardGrid } from '@astrojs/starlight/components'
 
-cmd-ipc includes several example projects demonstrating different use cases of the library. All examples can be found in the `examples/` folder in the repository and is a complete, runnable application. More examples will be added over time.
+cmd-ipc ships example projects for both language implementations. Each example is a complete, runnable application under `ts/examples/` or `rust/examples/` in the repository.
 
-## Available Examples
+## Coverage matrix
+
+| Example | Language | Transport | Shows |
+|---|---|---|---|
+| [Web Workers](/cmd-ipc/examples/typescript/web-workers/) | TypeScript | MessagePortChannel | Offload computation to background threads, React + Vite |
+| [Electron](/cmd-ipc/examples/typescript/electron/) | TypeScript | MessagePortChannel | Main ↔ renderer IPC with shared schemas |
+| [Cloudflare Workers](/cmd-ipc/examples/typescript/cloudflare-workers/) | TypeScript | HTTPChannel | Edge-deployed HTTP commands with remote schema generation |
+| [AI Agent MCP](/cmd-ipc/examples/typescript/mcp-agent/) | TypeScript | MCPClient/Server | Expose commands as AI agent tools |
+| [Multi-Service](/cmd-ipc/examples/rust/multi-service/) | Rust | InMemoryChannel | Cross-registry routing, `#[commands]` macro, event fan-out |
+
+## TypeScript
 
 <CardGrid>
   <Card title="Web Workers" icon="laptop">
     Offload computation to background threads while keeping the UI responsive. Shows MessagePortChannel with React and Vite.
 
-    [View Example →](/cmd-ipc/examples/web-workers/)
+    [View Example →](/cmd-ipc/examples/typescript/web-workers/)
 
   </Card>
   <Card title="Electron" icon="seti:electron">
     Type-safe IPC between main and renderer processes in desktop apps. Demonstrates shared schemas across processes.
 
-    [View Example →](/cmd-ipc/examples/electron/)
+    [View Example →](/cmd-ipc/examples/typescript/electron/)
 
   </Card>
   <Card title="Cloudflare Workers" icon="cloudflare">
     HTTP-based commands with remote schema generation. Shows HTTPChannel for edge computing.
 
-    [View Example →](/cmd-ipc/examples/cloudflare-workers/)
+    [View Example →](/cmd-ipc/examples/typescript/cloudflare-workers/)
 
   </Card>
   <Card title="AI Agent MCP" icon="star">
     Expose commands as AI agent tools via tool calling. Easily integrate with Vercel AI SDK, OpenAI, Anthropic, and other frameworks.
 
-    [View Example →](/cmd-ipc/examples/mcp-agent/)
+    [View Example →](/cmd-ipc/examples/typescript/mcp-agent/)
+
+  </Card>
+</CardGrid>
+
+## Rust
+
+<CardGrid>
+  <Card title="Multi-Service" icon="seti:rust">
+    Two registries (`root` and `worker`) wired through an in-memory channel with a REPL on the root. Demonstrates the `#[commands]` macro, cross-registry routing, and event fan-out.
+
+    [View Example →](/cmd-ipc/examples/rust/multi-service/)
 
   </Card>
 </CardGrid>

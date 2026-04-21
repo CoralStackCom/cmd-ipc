@@ -5,9 +5,9 @@ description: Using MCP channels to bridge cmd-ipc commands with MCP tools for AI
 
 import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
-The `@coralstack/cmd-ipc-mcp` package provides MCP channel implementations that bridge <a href="https://modelcontextprotocol.io/" target="_blank" rel="noopener">Model Context Protocol (MCP)</a> with cmd-ipc. It uses the official <a href="https://www.npmjs.com/package/@modelcontextprotocol/sdk" target="_blank" rel="noopener">@modelcontextprotocol/sdk</a> under the hood, delegating all protocol handling — JSON-RPC, sessions, streaming, and OAuth — to the SDK.
+MCP channels bridge <a href="https://modelcontextprotocol.io/" target="_blank" rel="noopener">Model Context Protocol</a> with cmd-ipc. Both the TypeScript and Rust implementations delegate protocol handling — JSON-RPC, sessions, streaming, and (for TS) OAuth — to the official MCP SDKs.
 
-Use cases include:
+Use cases:
 
 - Exposing application commands as AI agent tools
 - Connecting to remote MCP servers and using their tools as local commands
@@ -16,11 +16,40 @@ Use cases include:
 
 ## Installation
 
-```bash
-yarn add @coralstack/cmd-ipc-mcp @modelcontextprotocol/sdk
+<Tabs syncKey="lang">
+  <TabItem label="TypeScript" icon="seti:typescript">
+    ```bash
+    yarn add @coralstack/cmd-ipc-mcp @modelcontextprotocol/sdk
+    ```
+
+    `@coralstack/cmd-ipc` is a peer dependency and must also be installed. The package wraps the official <a href="https://www.npmjs.com/package/@modelcontextprotocol/sdk" target="_blank" rel="noopener">@modelcontextprotocol/sdk</a>.
+  </TabItem>
+  <TabItem label="Rust" icon="seti:rust">
+    ```bash
+    cargo add coralstack-cmd-ipc-mcp
+    ```
+
+    The crate wraps the <a href="https://docs.rs/rmcp" target="_blank" rel="noopener">`rmcp`</a> SDK. Only the server side (`McpServerChannel`) is implemented today — the client side (connecting to remote MCP servers from Rust) is not yet available.
+  </TabItem>
+</Tabs>
+
+## Rust: quick path
+
+For the common case of exposing a Rust `CommandRegistry` as an MCP server over stdio (e.g. for Claude Desktop), you only need a few lines:
+
+```rust
+use coralstack_cmd_ipc::prelude::*;
+use coralstack_cmd_ipc_mcp::McpServerChannel;
+
+let registry = CommandRegistry::new(Config::default());
+MyService.register_all(&registry).await?;
+
+McpServerChannel::new(registry).serve_stdio().await?;
 ```
 
-`@coralstack/cmd-ipc` is a peer dependency and must also be installed.
+Public commands (non-`_`-prefixed) appear to the MCP client via `tools/list`; `tools/call` routes through the registry's normal dispatch. Private commands are never exposed.
+
+The rest of this page covers the TypeScript API in detail.
 
 ## Two Channel Types
 
