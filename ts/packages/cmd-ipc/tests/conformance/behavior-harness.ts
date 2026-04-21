@@ -11,7 +11,12 @@ type VectorStep =
   | { direction: 'outbound'; to: string; expected: any; description?: string }
   | { direction: 'assert-no-outbound'; to: string; description?: string }
   | { direction: 'local-call'; trigger: LocalCallTrigger; description?: string }
-  | { direction: 'local-result'; expected?: any; description?: string }
+  | {
+      direction: 'local-result'
+      expected?: any
+      expectedError?: { code: string; message?: any }
+      description?: string
+    }
   | {
       direction: 'assert-local-listener'
       eventId: string
@@ -19,10 +24,13 @@ type VectorStep =
       lastPayload?: any
       description?: string
     }
+  | { direction: 'close-channel'; channel: string; description?: string }
 
 type LocalCallTrigger =
   | { executeCommand: [string, any?] }
   | { emitEvent: [string, any?] }
+  | { registerCommand: [string] }
+  | { listCommands: [] }
 
 type CommandSpec = {
   id: string
@@ -188,6 +196,17 @@ export async function runBehaviorVector(vector: BehaviorVector): Promise<RunResu
           } else if ('emitEvent' in trig) {
             const [eventId, payload] = trig.emitEvent
             registry.emitEvent(eventId, payload)
+          } else if ('registerCommand' in trig) {
+            const [cmd] = trig.registerCommand
+            pendingResult = registry
+              .registerCommand(cmd, async () => null as any)
+              .then(() => ({ ok: true as const, value: undefined }))
+              .catch((error: Error) => ({ ok: false as const, error }))
+          } else if ('listCommands' in trig) {
+            pendingResult = Promise.resolve({
+              ok: true as const,
+              value: registry.listCommands().map((c) => ({ id: c.id })),
+            })
           } else {
             throw new Error(`${tag}: unknown trigger`)
           }
@@ -198,12 +217,36 @@ export async function runBehaviorVector(vector: BehaviorVector): Promise<RunResu
           if (!pendingResult) throw new Error(`${tag}: no pending local-call`)
           const result = await pendingResult
           pendingResult = undefined
+          if ('expectedError' in step && step.expectedError) {
+            if (result.ok) {
+              throw new Error(
+                `${tag}: expected error ${step.expectedError.code}, got ok value ${JSON.stringify(result.value)}`,
+              )
+            }
+            const actualCode = (result.error as unknown as { code?: string }).code
+            if (actualCode !== step.expectedError.code) {
+              throw new Error(
+                `${tag}: expected error code "${step.expectedError.code}", got "${actualCode}" (${result.error.message})`,
+              )
+            }
+            if (step.expectedError.message !== undefined) {
+              match(step.expectedError.message, result.error.message, captures, `$[${i}].message`)
+            }
+            break
+          }
           if (!result.ok) {
             throw new Error(`${tag}: local-call rejected: ${result.error.message}`)
           }
           if ('expected' in step) {
             match(step.expected, result.value, captures, `$[${i}].result`)
           }
+          break
+        }
+        case 'close-channel': {
+          const ch = channels.get(step.channel)
+          if (!ch) throw new Error(`${tag}: unknown channel "${step.channel}"`)
+          await ch.close()
+          await flushMicrotasks()
           break
         }
         case 'assert-local-listener': {

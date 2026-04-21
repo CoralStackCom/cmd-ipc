@@ -1,0 +1,35 @@
+{
+  "description": "A registry with routerChannel set, when asked to register a command locally, MUST escalate by sending a register.command.request to the router channel and wait for an ack before the command becomes visible in listCommands.",
+  "setup": {
+    "registry": { "id": "worker", "routerChannel": "root" },
+    "peers": [{ "channelId": "root" }]
+  },
+  "steps": [
+    { "direction": "local-call", "trigger": { "registerCommand": ["math.add"] } },
+    {
+      "direction": "outbound",
+      "to": "root",
+      "expected": {
+        "id": { "$capture": "regId" },
+        "type": "register.command.request",
+        "command": { "id": "math.add" }
+      }
+    },
+    {
+      "direction": "inbound",
+      "from": "root",
+      "message": {
+        "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "type": "register.command.response",
+        "thid": { "$ref": "regId" },
+        "response": { "ok": true }
+      }
+    },
+    { "direction": "local-result" },
+    { "direction": "local-call", "trigger": { "listCommands": [] } },
+    {
+      "direction": "local-result",
+      "expected": { "$unordered": [{ "id": "math.add" }] }
+    }
+  ]
+}

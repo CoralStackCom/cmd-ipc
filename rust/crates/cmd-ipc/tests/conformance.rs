@@ -369,6 +369,33 @@ struct ListenerTrace {
     last_payload: Option<Value>,
 }
 
+/// Normalised error shape for local-call results so we can assert on a
+/// single `code` string that matches the wire-level error code enum used
+/// in both languages (`not_found`, `internal_error`, `invalid_request`,
+/// `timeout`, `channel_disconnected`, `duplicate_command`, …).
+struct LocalCallErr {
+    code: String,
+    message: String,
+}
+
+fn command_error_to_local_err(e: &coralstack_cmd_ipc::CommandError) -> LocalCallErr {
+    use coralstack_cmd_ipc::CommandError;
+    let (code, message) = match e {
+        CommandError::NotFound(_) => ("not_found", e.to_string()),
+        CommandError::InvalidRequest { message, .. } => ("invalid_request", message.clone()),
+        CommandError::Internal { message, .. } => ("internal_error", message.clone()),
+        CommandError::Timeout => ("timeout", e.to_string()),
+        CommandError::ChannelDisconnected => ("channel_disconnected", e.to_string()),
+        CommandError::DuplicateCommand(_) => ("duplicate_command", e.to_string()),
+        CommandError::InvalidMessage(_) => ("invalid_message", e.to_string()),
+        CommandError::Serde(_) => ("internal_error", e.to_string()),
+    };
+    LocalCallErr {
+        code: code.into(),
+        message,
+    }
+}
+
 /// Expression evaluator for `returns.$expr` — the same tiny grammar the TS
 /// harness accepts (`request.<ident>` or numeric literal, combined with `+`,
 /// `-`, `*`).
@@ -518,7 +545,7 @@ fn run_behavior_vector(file: &Path, pool: &ThreadPool) -> Result<(), String> {
     }
 
     let mut captures: CaptureBag = HashMap::new();
-    let mut pending_result: Option<oneshot::Receiver<Result<Value, String>>> = None;
+    let mut pending_result: Option<oneshot::Receiver<Result<Value, LocalCallErr>>> = None;
 
     for (i, step) in steps.iter().enumerate() {
         let direction = step["direction"].as_str().unwrap_or("");
@@ -567,12 +594,12 @@ fn run_behavior_vector(file: &Path, pool: &ThreadPool) -> Result<(), String> {
                 if let Some(args) = trigger.get("executeCommand").and_then(Value::as_array) {
                     let cmd = args.first().and_then(Value::as_str).unwrap_or("").to_string();
                     let req = args.get(1).cloned().unwrap_or(Value::Null);
-                    let (tx, rx) = oneshot::channel::<Result<Value, String>>();
+                    let (tx, rx) = oneshot::channel::<Result<Value, LocalCallErr>>();
                     let registry_clone = registry.clone();
                     pool.spawn(async move {
                         let result: Result<Value, _> =
                             registry_clone.execute_command(&cmd, req).await;
-                        let _ = tx.send(result.map_err(|e| e.to_string()));
+                        let _ = tx.send(result.map_err(|e| command_error_to_local_err(&e)));
                     })
                     .map_err(|e| format!("{tag}: spawn: {e}"))?;
                     pending_result = Some(rx);
@@ -582,6 +609,41 @@ fn run_behavior_vector(file: &Path, pool: &ThreadPool) -> Result<(), String> {
                     registry
                         .emit_event(&eid, payload)
                         .map_err(|e| format!("{tag}: emit_event: {e}"))?;
+                } else if let Some(args) = trigger.get("registerCommand").and_then(Value::as_array) {
+                    let id = args.first().and_then(Value::as_str).unwrap_or("").to_string();
+                    let def = CommandDef {
+                        id: id.clone(),
+                        description: None,
+                        schema: None,
+                    };
+                    let (tx, rx) = oneshot::channel::<Result<Value, LocalCallErr>>();
+                    let registry_clone = registry.clone();
+                    pool.spawn(async move {
+                        let result = registry_clone
+                            .register_command(def, |_v: Value| async move {
+                                Ok::<Value, ExecuteError>(Value::Null)
+                            })
+                            .await;
+                        let _ = tx.send(
+                            result
+                                .map(|_| Value::Null)
+                                .map_err(|e| command_error_to_local_err(&e)),
+                        );
+                    })
+                    .map_err(|e| format!("{tag}: spawn: {e}"))?;
+                    pending_result = Some(rx);
+                } else if trigger.get("listCommands").is_some() {
+                    let commands = registry.list_commands();
+                    let value = serde_json::to_value(
+                        commands
+                            .into_iter()
+                            .map(|c| serde_json::json!({ "id": c.id }))
+                            .collect::<Vec<_>>(),
+                    )
+                    .unwrap();
+                    let (tx, rx) = oneshot::channel::<Result<Value, LocalCallErr>>();
+                    let _ = tx.send(Ok(value));
+                    pending_result = Some(rx);
                 } else {
                     return Err(format!("{tag}: unknown trigger"));
                 }
@@ -593,14 +655,55 @@ fn run_behavior_vector(file: &Path, pool: &ThreadPool) -> Result<(), String> {
                     .ok_or_else(|| format!("{tag}: no pending local-call"))?;
                 let result = block_on(async {
                     futures::select_biased! {
-                        r = rx.fuse() => r.unwrap_or_else(|_| Err("canceled".into())),
-                        _ = sleep_future(Duration::from_secs(2)).fuse() => Err("timeout waiting for local-result".into()),
+                        r = rx.fuse() => r.unwrap_or_else(|_| Err(LocalCallErr { code: "canceled".into(), message: "canceled".into() })),
+                        _ = sleep_future(Duration::from_secs(2)).fuse() => Err(LocalCallErr { code: "timeout".into(), message: "timeout waiting for local-result".into() }),
                     }
                 });
-                let value = result.map_err(|e| format!("{tag}: local-call rejected: {e}"))?;
-                if let Some(expected) = step.get("expected") {
-                    match_value(expected, &value, &mut captures, &format!("$[{i}].result"))?;
+                if let Some(expected_err) = step.get("expectedError") {
+                    match result {
+                        Ok(v) => {
+                            return Err(format!(
+                                "{tag}: expected error but got ok value {v}"
+                            ));
+                        }
+                        Err(e) => {
+                            if let Some(code) = expected_err.get("code").and_then(Value::as_str) {
+                                if e.code != code {
+                                    return Err(format!(
+                                        "{tag}: expected error code {code:?}, got {:?} ({})",
+                                        e.code, e.message
+                                    ));
+                                }
+                            }
+                            if let Some(msg_pat) = expected_err.get("message") {
+                                match_value(
+                                    msg_pat,
+                                    &Value::String(e.message.clone()),
+                                    &mut captures,
+                                    &format!("$[{i}].message"),
+                                )?;
+                            }
+                        }
+                    }
+                } else {
+                    let value = result.map_err(|e| {
+                        format!("{tag}: local-call rejected: {} ({})", e.code, e.message)
+                    })?;
+                    if let Some(expected) = step.get("expected") {
+                        match_value(expected, &value, &mut captures, &format!("$[{i}].result"))?;
+                    }
                 }
+            }
+            "close-channel" => {
+                let ch_id = step["channel"].as_str().unwrap_or("");
+                let ch = channels
+                    .get(ch_id)
+                    .ok_or_else(|| format!("{tag}: unknown channel {ch_id:?}"))?
+                    .clone();
+                block_on(ch.close());
+                // Give the driver task time to observe EOF and run
+                // handle_channel_close so remote commands are purged.
+                std::thread::sleep(Duration::from_millis(60));
             }
             "assert-local-listener" => {
                 let eid = step["eventId"].as_str().unwrap_or("");

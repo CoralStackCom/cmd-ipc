@@ -1,0 +1,32 @@
+{
+  "description": "Closing a channel MUST drop every command that was advertised by that channel. A subsequent listCommands MUST omit them, and executing one MUST return not_found at a root registry (no surviving pointer to the dead channel).",
+  "setup": {
+    "registry": { "id": "main" },
+    "peers": [{ "channelId": "worker-1" }]
+  },
+  "steps": [
+    {
+      "direction": "inbound",
+      "from": "worker-1",
+      "message": {
+        "id": "11111111-1111-4111-8111-111111111111",
+        "type": "register.command.request",
+        "command": { "id": "math.add" }
+      }
+    },
+    {
+      "direction": "outbound",
+      "to": "worker-1",
+      "expected": {
+        "type": "register.command.response",
+        "thid": "11111111-1111-4111-8111-111111111111",
+        "response": { "ok": true }
+      }
+    },
+    { "direction": "close-channel", "channel": "worker-1" },
+    { "direction": "local-call", "trigger": { "listCommands": [] } },
+    { "direction": "local-result", "expected": [] },
+    { "direction": "local-call", "trigger": { "executeCommand": ["math.add", { "a": 1, "b": 2 }] } },
+    { "direction": "local-result", "expectedError": { "code": "not_found" } }
+  ]
+}

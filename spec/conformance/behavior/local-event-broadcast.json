@@ -1,0 +1,52 @@
+{
+  "description": "emitEvent on a non-private event MUST fan out to every connected channel (same message id across channels so receivers can dedup) and fire local listeners once. Receiving an echo of that same message id from a peer MUST NOT re-fire the local listener.",
+  "setup": {
+    "registry": { "id": "main", "localEventListeners": ["user.updated"] },
+    "peers": [{ "channelId": "worker-1" }, { "channelId": "worker-2" }]
+  },
+  "steps": [
+    { "direction": "local-call", "trigger": { "emitEvent": ["user.updated", { "userId": 7 }] } },
+    {
+      "direction": "outbound",
+      "to": "worker-1",
+      "expected": {
+        "id": { "$capture": "evtId" },
+        "type": "event",
+        "eventId": "user.updated",
+        "payload": { "userId": 7 }
+      }
+    },
+    {
+      "direction": "outbound",
+      "to": "worker-2",
+      "expected": {
+        "id": { "$ref": "evtId" },
+        "type": "event",
+        "eventId": "user.updated",
+        "payload": { "userId": 7 }
+      }
+    },
+    {
+      "direction": "assert-local-listener",
+      "eventId": "user.updated",
+      "invocations": 1,
+      "lastPayload": { "userId": 7 }
+    },
+    {
+      "description": "Echo of the same event id from a peer MUST be dropped (dedup) — local listener invocation count stays at 1.",
+      "direction": "inbound",
+      "from": "worker-1",
+      "message": {
+        "id": { "$ref": "evtId" },
+        "type": "event",
+        "eventId": "user.updated",
+        "payload": { "userId": 7 }
+      }
+    },
+    {
+      "direction": "assert-local-listener",
+      "eventId": "user.updated",
+      "invocations": 1
+    }
+  ]
+}
