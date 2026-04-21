@@ -99,10 +99,24 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
     }
 
     // Build the inherent `register_all` method as its own impl block to
-    // avoid threading user methods.
+    // avoid threading user methods. Each generated wrapper struct
+    // implements `Command` — we build its CommandDef inline and use the
+    // crate-private `__handler_for_command` helper to produce the
+    // handler closure, matching what users would write by hand.
     let register_calls = registrations.iter().map(|(_, ident)| {
         quote! {
-            registry.register(#ident { host: ::std::sync::Arc::clone(&host) }).await?;
+            {
+                let cmd = #ident { host: ::std::sync::Arc::clone(&host) };
+                let def = ::coralstack_cmd_ipc::CommandDef {
+                    id: <#ident as ::coralstack_cmd_ipc::Command>::ID.to_string(),
+                    description: <#ident as ::coralstack_cmd_ipc::Command>::DESCRIPTION
+                        .map(::std::string::ToString::to_string),
+                    schema: <#ident as ::coralstack_cmd_ipc::Command>::schema(),
+                };
+                registry
+                    .register_command(def, ::coralstack_cmd_ipc::__handler_for_command(cmd))
+                    .await?;
+            }
         }
     });
 

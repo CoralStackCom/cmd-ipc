@@ -18,8 +18,9 @@
 //! Private commands/events (identifiers starting with `_`) stay local
 //! — never escalated, never advertised, never broadcast.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -67,6 +68,35 @@ impl Default for Config {
 type HandlerFn = dyn Fn(Value) -> BoxFuture<'static, Result<Value, ExecuteError>> + Send + Sync;
 type EventListener = Arc<dyn Fn(Value) + Send + Sync>;
 
+/// Internal helper used by the `#[commands]` macro to wrap a typed
+/// [`Command`] implementation in a closure suitable for
+/// [`CommandRegistry::register_command`]. Not part of the public API.
+#[doc(hidden)]
+pub fn __handler_for_command<C: Command>(
+    cmd: C,
+) -> impl Fn(Value) -> BoxFuture<'static, Result<Value, ExecuteError>> + Send + Sync + 'static {
+    use futures::FutureExt;
+    let cmd = Arc::new(cmd);
+    move |value: Value| {
+        let cmd = cmd.clone();
+        async move {
+            let req: C::Request = serde_json::from_value(value).map_err(|e| ExecuteError {
+                code: ExecuteErrorCode::InvalidRequest,
+                message: e.to_string(),
+            })?;
+            let res = cmd
+                .handle(req)
+                .await
+                .map_err(|e| command_error_to_execute(&e, C::ID))?;
+            serde_json::to_value(res).map_err(|e| ExecuteError {
+                code: ExecuteErrorCode::InternalError,
+                message: e.to_string(),
+            })
+        }
+        .boxed()
+    }
+}
+
 struct LocalEntry {
     handler: Arc<HandlerFn>,
     def: CommandDef,
@@ -96,7 +126,7 @@ struct Inner {
     /// command id -> owning channel id
     remote: Mutex<HashMap<String, String>>,
     /// command id -> advertised definition (description + schema)
-    /// kept parallel to `remote` so `list_commands_detail` can render
+    /// kept parallel to `remote` so `list_commands` can render
     /// the same richness for remote entries as for local ones.
     remote_defs: Mutex<HashMap<String, CommandDef>>,
     channels: Mutex<HashMap<String, Arc<dyn CommandChannel>>>,
@@ -104,7 +134,13 @@ struct Inner {
     register_replies: TtlMap<MessageId, PendingRegister>,
     routes: TtlMap<MessageId, RouteEntry>,
     seen_events: TtlMap<MessageId, ()>,
-    event_listeners: Mutex<HashMap<String, Vec<EventListener>>>,
+    /// Event listeners keyed by event id then by a monotonic token, so
+    /// `add_event_listener` can return an unsubscribe closure that
+    /// removes just that one listener. `BTreeMap` preserves insertion
+    /// order (tokens are monotonically increasing) for dispatch.
+    event_listeners: Mutex<HashMap<String, BTreeMap<u64, EventListener>>>,
+    /// Monotonically-increasing token used to key event listeners.
+    next_listener_token: AtomicU64,
 }
 
 /// The main entry point of the crate.
@@ -129,6 +165,7 @@ impl CommandRegistry {
             routes: TtlMap::new(cfg.request_ttl),
             seen_events: TtlMap::new(cfg.event_ttl),
             event_listeners: Mutex::new(HashMap::new()),
+            next_listener_token: AtomicU64::new(0),
         });
         Self { inner }
     }
@@ -138,26 +175,19 @@ impl CommandRegistry {
         &self.inner.id
     }
 
-    /// Returns the command ids currently reachable from this registry —
-    /// every local command plus every remote command previously
-    /// advertised by a peer. The listing excludes private commands
-    /// (leading `_`) since those are never advertised on the wire and
-    /// would not be callable from a remote caller anyway.
+    /// Returns the ids of every currently-registered channel, sorted.
     ///
-    /// Order is unspecified; results are sorted for stable display.
-    pub fn list_commands(&self) -> Vec<String> {
+    /// Mirrors the TypeScript library's `listChannels()` method.
+    pub fn list_channels(&self) -> Vec<String> {
         let mut ids: Vec<String> = self
             .inner
-            .local
+            .channels
             .lock()
             .unwrap()
-            .iter()
-            .filter(|(_, entry)| !entry.is_private)
-            .map(|(id, _)| id.clone())
+            .keys()
+            .cloned()
             .collect();
-        ids.extend(self.inner.remote.lock().unwrap().keys().cloned());
         ids.sort();
-        ids.dedup();
         ids
     }
 
@@ -166,9 +196,10 @@ impl CommandRegistry {
     /// defs are those advertised via `register.command.request` or
     /// `list.commands.response` on the channel.
     ///
+    /// Mirrors the TypeScript library's `listCommands()` method.
     /// Results are sorted by id. A command id is only included once even
     /// if both a local and remote entry exist (local wins).
-    pub fn list_commands_detail(&self) -> Vec<CommandDef> {
+    pub fn list_commands(&self) -> Vec<CommandDef> {
         let mut out: HashMap<String, CommandDef> = HashMap::new();
         for (id, entry) in self.inner.local.lock().unwrap().iter() {
             if !entry.is_private {
@@ -183,28 +214,50 @@ impl CommandRegistry {
         v
     }
 
-    /// Registers a typed [`Command`].
+    /// Registers a command on this registry.
     ///
-    /// If the registry has a `router_channel`, non-private commands are
-    /// first escalated upstream; the local entry is only added after
-    /// the router acks.
+    /// Mirrors the TypeScript library's `registerCommand(command, handler)`.
+    /// The [`CommandDef`] carries the id, description, and JSON Schema
+    /// advertised on the wire. The `handler` is any async closure taking
+    /// a JSON request value and returning a future that resolves to a
+    /// JSON response value (or an [`ExecuteError`]) — the registry boxes
+    /// and stores it internally.
     ///
-    /// The schema returned by `C::schema()` is normalized by
-    /// [`crate::schema::normalize_schema`] before being stored and
-    /// advertised on the wire, so every schema that leaves the
-    /// registry — via `list_commands_detail`, `list.commands.response`,
-    /// or `register.command.request` — is language-agnostic JSON
-    /// Schema regardless of how the `Command` impl was built.
-    pub async fn register<C: Command>(&self, cmd: C) -> Result<(), CommandError> {
-        let id = C::ID.to_string();
+    /// - Commands whose id starts with `_` stay local: they are never
+    ///   escalated to a `router_channel` and never advertised to peers
+    ///   via `list.commands.response`.
+    /// - Non-private commands are escalated upstream if this registry
+    ///   has a `router_channel`; the local entry is only committed after
+    ///   the router acks.
+    /// - The schema on `def` is normalized via
+    ///   [`crate::schema::normalize_schema`] on the way in, so every
+    ///   schema leaving the registry is language-agnostic JSON Schema
+    ///   regardless of how the caller built it.
+    ///
+    /// For commands that have a compile-time [`Command`] trait impl,
+    /// prefer the `#[commands]` macro or call [`execute`](Self::execute)
+    /// to invoke; this method handles both macro-generated registrations
+    /// and hand-written dynamic handlers uniformly.
+    pub async fn register_command<F, Fut>(
+        &self,
+        def: CommandDef,
+        handler: F,
+    ) -> Result<(), CommandError>
+    where
+        F: Fn(Value) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<Value, ExecuteError>> + Send + 'static,
+    {
+        let stored: Arc<HandlerFn> =
+            Arc::new(move |v: Value| Box::pin(handler(v)) as BoxFuture<'static, _>);
+        let id = def.id.clone();
         let is_private = id.starts_with('_');
-        let def = CommandDef {
-            id: id.clone(),
-            description: C::DESCRIPTION.map(String::from),
-            schema: C::schema().map(crate::schema::normalize_command_schema),
+        let normalized_def = CommandDef {
+            id: def.id,
+            description: def.description,
+            schema: def.schema.map(crate::schema::normalize_command_schema),
         };
-        let handler = make_handler::<C>(Arc::new(cmd));
-        self.register_inner(id, handler, def, is_private).await
+        self.register_inner(id, stored, normalized_def, is_private)
+            .await
     }
 
     async fn register_inner(
@@ -308,9 +361,16 @@ impl CommandRegistry {
         })
     }
 
-    /// Executes a command. Looks up in local, then remote, then
-    /// escalates to `router_channel`.
-    pub async fn execute<Req, Res>(
+    /// Executes a command — the **loose** form, mirroring the TypeScript
+    /// library's `executeCommand(id, ...args)` in loose mode. Looks up
+    /// in local, then remote, then escalates to `router_channel`.
+    ///
+    /// `Req` and `Res` are generic: specify them via turbofish or type
+    /// annotation. For purely dynamic dispatch use
+    /// `execute_command::<serde_json::Value, serde_json::Value>(...)`.
+    /// For statically-known commands, prefer [`execute`](Self::execute)
+    /// which pins the types from a [`Command`] trait impl.
+    pub async fn execute_command<Req, Res>(
         &self,
         command_id: &str,
         request: Req,
@@ -320,14 +380,41 @@ impl CommandRegistry {
         Res: DeserializeOwned,
     {
         let req_value = serde_json::to_value(request)?;
-        let result = self.execute_raw(command_id.to_string(), req_value).await?;
+        let result = self
+            .execute_raw_impl(command_id.to_string(), req_value)
+            .await?;
         let deserialized = serde_json::from_value(result.unwrap_or(Value::Null))?;
         Ok(deserialized)
     }
 
-    /// Executes a command with a pre-encoded request payload. Returns
-    /// the raw response JSON (or `None` if the handler returned unit).
-    pub async fn execute_raw(
+    /// Executes a command identified by a compile-time [`Command`] type
+    /// — the **strict** form, giving the same compile-time type safety
+    /// that TypeScript's strict-mode `executeCommand<K>` gives via the
+    /// `CommandSchemaMap` type parameter.
+    ///
+    /// The command id comes from `C::ID`, the request type is pinned to
+    /// `C::Request`, and the response type is pinned to `C::Response`,
+    /// so the compiler rejects mismatches at the call site:
+    ///
+    /// ```ignore
+    /// let sum: i64 = registry.execute::<MathAdd>(AddReq { a: 2, b: 3 }).await?;
+    /// ```
+    ///
+    /// For commands only known at runtime (scripting runtimes, FFI)
+    /// use [`execute_command`](Self::execute_command).
+    pub async fn execute<C: Command>(
+        &self,
+        request: C::Request,
+    ) -> Result<C::Response, CommandError>
+    where
+        C::Request: Serialize,
+        C::Response: DeserializeOwned,
+    {
+        self.execute_command::<C::Request, C::Response>(C::ID, request)
+            .await
+    }
+
+    async fn execute_raw_impl(
         &self,
         command_id: String,
         request: Value,
@@ -433,31 +520,95 @@ impl CommandRegistry {
 
     /// Subscribes a listener that fires whenever an event with the
     /// given id is emitted or received.
-    pub fn on_event<F>(&self, event_id: &str, listener: F)
+    ///
+    /// Mirrors the TypeScript library's `addEventListener`. Returns an
+    /// unsubscribe closure — call it (and drop it) to remove just this
+    /// listener. Ignoring the return value is fine; the listener then
+    /// lives for the life of the registry.
+    ///
+    /// Listeners for the same event fire in insertion order.
+    pub fn add_event_listener<F>(
+        &self,
+        event_id: &str,
+        listener: F,
+    ) -> impl FnOnce() + Send + Sync + 'static
     where
         F: Fn(Value) + Send + Sync + 'static,
     {
+        let token = self
+            .inner
+            .next_listener_token
+            .fetch_add(1, Ordering::Relaxed);
         self.inner
             .event_listeners
             .lock()
             .unwrap()
             .entry(event_id.to_string())
             .or_default()
-            .push(Arc::new(listener));
+            .insert(token, Arc::new(listener));
+
+        let inner = Arc::clone(&self.inner);
+        let event_id = event_id.to_string();
+        move || {
+            let mut map = inner.event_listeners.lock().unwrap();
+            if let Some(slot) = map.get_mut(&event_id) {
+                slot.remove(&token);
+                if slot.is_empty() {
+                    map.remove(&event_id);
+                }
+            }
+        }
     }
 
     fn dispatch_event_locally(&self, event_id: &str, payload: &Value) {
-        let listeners = self
+        let listeners: Vec<EventListener> = self
             .inner
             .event_listeners
             .lock()
             .unwrap()
             .get(event_id)
-            .cloned()
+            .map(|m| m.values().cloned().collect())
             .unwrap_or_default();
         for l in listeners {
             l(payload.clone());
         }
+    }
+
+    /// Tears down the registry: closes every channel, drops every local
+    /// and remote command, and clears all event listeners. In-flight
+    /// executes and register requests fail with
+    /// [`CommandError::ChannelDisconnected`] via the existing
+    /// channel-close path.
+    ///
+    /// Mirrors the TypeScript library's `dispose()`. Callers normally
+    /// don't need this — dropping the last `CommandRegistry` clone
+    /// releases the inner state automatically via `Drop`. Use `dispose`
+    /// when a *shared* registry (held through multiple clones) needs to
+    /// be forcibly torn down, or in tests.
+    pub fn dispose(&self) {
+        // Snapshot channel arcs so we can call `close` without holding
+        // the channels lock for the duration.
+        let channels: Vec<Arc<dyn CommandChannel>> = {
+            let mut locked = self.inner.channels.lock().unwrap();
+            let out: Vec<_> = locked.values().cloned().collect();
+            locked.clear();
+            out
+        };
+        for ch in channels {
+            // `close` is async on the channel trait; fire-and-forget
+            // the tear-down. The channel's own driver future will see
+            // EOF and run handle_channel_close, finishing cleanup.
+            let fut = ch.close();
+            // Drop the future — the channel impl's `close` signals
+            // synchronously; polling is only to let cooperative impls
+            // drain. Best-effort teardown is the right semantics here.
+            drop(fut);
+        }
+
+        self.inner.local.lock().unwrap().clear();
+        self.inner.remote.lock().unwrap().clear();
+        self.inner.remote_defs.lock().unwrap().clear();
+        self.inner.event_listeners.lock().unwrap().clear();
     }
 }
 
@@ -795,12 +946,12 @@ impl Inner {
         inner.seen_events.insert(msg_id, ());
 
         let payload_value = payload.clone().unwrap_or(Value::Null);
-        let listeners = inner
+        let listeners: Vec<EventListener> = inner
             .event_listeners
             .lock()
             .unwrap()
             .get(&event_id)
-            .cloned()
+            .map(|m| m.values().cloned().collect())
             .unwrap_or_default();
         for l in listeners {
             l(payload_value.clone());
@@ -917,26 +1068,6 @@ impl Inner {
 }
 
 // ------- helpers -----------------------------------------------------
-
-fn make_handler<C: Command>(cmd: Arc<C>) -> Arc<HandlerFn> {
-    Arc::new(move |value: Value| {
-        let cmd = cmd.clone();
-        Box::pin(async move {
-            let req: C::Request = serde_json::from_value(value).map_err(|e| ExecuteError {
-                code: ExecuteErrorCode::InvalidRequest,
-                message: e.to_string(),
-            })?;
-            let res = cmd
-                .handle(req)
-                .await
-                .map_err(|e| command_error_to_execute(&e, C::ID))?;
-            serde_json::to_value(res).map_err(|e| ExecuteError {
-                code: ExecuteErrorCode::InternalError,
-                message: e.to_string(),
-            })
-        })
-    })
-}
 
 fn command_error_to_execute(e: &CommandError, command_id: &str) -> ExecuteError {
     match e {

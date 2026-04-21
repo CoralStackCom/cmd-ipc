@@ -36,7 +36,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
 
     let fn_name = &func.sig.ident;
     let struct_ident = free_fn_struct_ident(fn_name);
-    let factory_ident = format_ident!("{}_command", fn_name);
+    let register_ident = format_ident!("register_{}", fn_name);
     let vis = &func.vis;
     let description = description_tokens(args.description.as_ref());
     let id_lit = &args.id;
@@ -63,9 +63,22 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
 
         #command_impl
 
-        /// Returns a `Command` handler generated from the free fn above.
-        #[allow(non_snake_case)]
-        #vis fn #factory_ident () -> impl #cmd_ipc::Command { #struct_ident }
+        /// Registers the annotated free fn as a command on `registry`.
+        /// Returns once the command has been installed locally (and, if
+        /// the registry has a `router_channel`, escalated upstream).
+        #vis async fn #register_ident(
+            registry: &#cmd_ipc::CommandRegistry,
+        ) -> ::core::result::Result<(), #cmd_ipc::CommandError> {
+            let def = #cmd_ipc::CommandDef {
+                id: <#struct_ident as #cmd_ipc::Command>::ID.to_string(),
+                description: <#struct_ident as #cmd_ipc::Command>::DESCRIPTION
+                    .map(::std::string::ToString::to_string),
+                schema: <#struct_ident as #cmd_ipc::Command>::schema(),
+            };
+            registry
+                .register_command(def, #cmd_ipc::__handler_for_command(#struct_ident))
+                .await
+        }
     })
 }
 

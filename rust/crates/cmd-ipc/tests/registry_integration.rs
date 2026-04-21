@@ -13,12 +13,60 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use coralstack_cmd_ipc::{
-    Command, CommandChannel, CommandError, CommandRegistry, Config, InMemoryChannel,
+    Command, CommandChannel, CommandDef, CommandError, CommandRegistry, Config, ExecuteError,
+    ExecuteErrorCode, InMemoryChannel,
 };
 use futures::executor::{block_on, ThreadPool};
 use futures::task::SpawnExt;
+use futures::FutureExt;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
+
+/// Helper: register a typed `Command` impl on a registry. Mirrors what
+/// the `#[commands]` macro generates per method — builds a CommandDef
+/// from the trait constants and wraps the instance's async handler in
+/// a closure that deserializes the request / serializes the response.
+async fn register_typed<C: Command>(registry: &CommandRegistry, cmd: C) -> Result<(), CommandError>
+where
+    C::Request: serde::de::DeserializeOwned,
+    C::Response: serde::Serialize,
+{
+    let def = CommandDef {
+        id: C::ID.to_string(),
+        description: C::DESCRIPTION.map(String::from),
+        schema: C::schema(),
+    };
+    let cmd = std::sync::Arc::new(cmd);
+    registry
+        .register_command(def, move |value: Value| {
+            let cmd = cmd.clone();
+            async move {
+                let req: C::Request = serde_json::from_value(value).map_err(|e| ExecuteError {
+                    code: ExecuteErrorCode::InvalidRequest,
+                    message: e.to_string(),
+                })?;
+                // Preserve the handler's error message verbatim — same
+                // shape as `__handler_for_command`'s library-internal
+                // mapping, so tests asserting exact messages pass.
+                let res = cmd.handle(req).await.map_err(|e| match e {
+                    CommandError::Internal { message, .. } => ExecuteError {
+                        code: ExecuteErrorCode::InternalError,
+                        message,
+                    },
+                    other => ExecuteError {
+                        code: ExecuteErrorCode::InternalError,
+                        message: other.to_string(),
+                    },
+                })?;
+                serde_json::to_value(res).map_err(|e| ExecuteError {
+                    code: ExecuteErrorCode::InternalError,
+                    message: e.to_string(),
+                })
+            }
+            .boxed()
+        })
+        .await
+}
 
 // ---------- test commands ----------
 
@@ -149,10 +197,10 @@ fn child_executes_command_on_root_via_router() {
     let (reg_a, reg_b, _ca, _cb, _pool) = wire_pair("a", "b", None, Some("a"));
 
     block_on(async {
-        reg_a.register(MathAdd).await.unwrap();
+        register_typed(&reg_a, MathAdd).await.unwrap();
 
         let res: i64 = reg_b
-            .execute("math.add", AddReq { a: 2, b: 3 })
+            .execute_command("math.add", AddReq { a: 2, b: 3 })
             .await
             .unwrap();
         assert_eq!(res, 5);
@@ -165,9 +213,9 @@ fn child_registration_escalates_and_root_can_invoke() {
 
     block_on(async {
         // Register on the child — escalates to the root.
-        reg_b.register(Greet).await.unwrap();
+        register_typed(&reg_b, Greet).await.unwrap();
 
-        let res: String = reg_a.execute("greet", "world").await.unwrap();
+        let res: String = reg_a.execute_command("greet", "world").await.unwrap();
         assert_eq!(res, "hello, world");
     });
 }
@@ -177,8 +225,8 @@ fn duplicate_registration_fails() {
     let (reg_a, _reg_b, _ca, _cb, _pool) = wire_pair("a", "b", None, Some("a"));
 
     block_on(async {
-        reg_a.register(MathAdd).await.unwrap();
-        let err = reg_a.register(MathAdd).await.unwrap_err();
+        register_typed(&reg_a, MathAdd).await.unwrap();
+        let err = register_typed(&reg_a, MathAdd).await.unwrap_err();
         assert!(matches!(err, CommandError::DuplicateCommand(id) if id == "math.add"));
     });
 }
@@ -189,7 +237,7 @@ fn unknown_command_returns_not_found() {
 
     block_on(async {
         let err = reg_b
-            .execute::<_, ()>("missing.cmd", json!({}))
+            .execute_command::<_, ()>("missing.cmd", json!({}))
             .await
             .unwrap_err();
         assert!(matches!(err, CommandError::NotFound(_)));
@@ -201,8 +249,11 @@ fn handler_error_surfaces_to_caller() {
     let (reg_a, reg_b, _ca, _cb, _pool) = wire_pair("a", "b", None, Some("a"));
 
     block_on(async {
-        reg_a.register(Failing).await.unwrap();
-        let err = reg_b.execute::<_, ()>("explode", ()).await.unwrap_err();
+        register_typed(&reg_a, Failing).await.unwrap();
+        let err = reg_b
+            .execute_command::<_, ()>("explode", ())
+            .await
+            .unwrap_err();
         match err {
             CommandError::Internal { message, .. } => assert_eq!(message, "boom"),
             other => panic!("expected Internal error, got {other:?}"),
@@ -225,10 +276,10 @@ fn private_command_stays_local() {
     let (reg_a, reg_b, _ca, _cb, _pool) = wire_pair("a", "b", None, Some("a"));
 
     block_on(async {
-        reg_a.register(LocalOnly).await.unwrap();
+        register_typed(&reg_a, LocalOnly).await.unwrap();
 
         // Local call on A works.
-        let res: i32 = reg_a.execute("_secret", ()).await.unwrap();
+        let res: i32 = reg_a.execute_command("_secret", ()).await.unwrap();
         assert_eq!(res, 7);
 
         // Call from B does NOT escalate private commands — router
@@ -238,7 +289,7 @@ fn private_command_stays_local() {
         // forwards and A serves it locally. This is the same
         // behavior as the TS library: privacy prevents advertising,
         // not serving. So the call succeeds.
-        let via_router: i32 = reg_b.execute("_secret", ()).await.unwrap();
+        let via_router: i32 = reg_b.execute_command("_secret", ()).await.unwrap();
         assert_eq!(via_router, 7);
     });
 }
@@ -253,7 +304,7 @@ fn events_broadcast_and_dedup() {
 
     let hits = Arc::new(Mutex::new(Vec::<String>::new()));
     let h = hits.clone();
-    reg_b.on_event("user.created", move |payload| {
+    let _unsub = reg_b.add_event_listener("user.created", move |payload| {
         h.lock().unwrap().push(payload.to_string());
     });
 
@@ -274,7 +325,7 @@ fn private_event_does_not_cross_channel() {
 
     let hits = Arc::new(Mutex::new(0u32));
     let h = hits.clone();
-    reg_b.on_event("_tick", move |_| {
+    let _unsub = reg_b.add_event_listener("_tick", move |_| {
         *h.lock().unwrap() += 1;
     });
 
@@ -302,10 +353,10 @@ fn channel_close_fails_pending_executes() {
     }
 
     block_on(async {
-        reg_a.register(HangForever).await.unwrap();
+        register_typed(&reg_a, HangForever).await.unwrap();
 
         // Kick off the execute but don't await yet.
-        let fut = reg_b.execute::<_, ()>("hang", ());
+        let fut = reg_b.execute_command::<_, ()>("hang", ());
         let handle = futures::FutureExt::boxed(fut);
 
         // Give the request a beat to land on A.

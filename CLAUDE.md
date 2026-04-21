@@ -88,7 +88,23 @@ Per-language commands still work inside each subdir (`cd ts && yarn ...`, `cd ru
 
 The Rust port mirrors the TypeScript library's protocol and routing semantics with a strict, statically-typed API (no Loose mode — Rust types ARE the schema).
 
-1. **`CommandRegistry`** (`src/registry.rs`) — same routing model as TS: local / remote / router_channel escalation, private-prefix isolation, event fan-out with dedup, TTL-tracked in-flight requests. `list_commands()` returns the reachable command IDs (mirrors TS `listCommands()`).
+1. **`CommandRegistry`** (`src/registry.rs`) — same routing model as TS: local / remote / router_channel escalation, private-prefix isolation, event fan-out with dedup, TTL-tracked in-flight requests. Public methods align with the TypeScript library:
+   Public API (aligned 1:1 with the TypeScript reference, plus one Rust-only strict-mode method):
+   - `register_command(def: CommandDef, handler)` — single registration entry point. `handler` is any async closure `Fn(Value) -> Future<Output = Result<Value, ExecuteError>>`; the registry boxes it internally. Mirrors TS `registerCommand(command, handler)`.
+   - `register_channel(channel)` — attach a peer. **Commands owned by a channel are cleaned up automatically when the channel closes** (same as the TypeScript reference — no `unregister` method). For dynamic lifecycle-scoped command groups (e.g. Flow plugin sources), implement a custom `CommandChannel` that advertises its commands on connect; closing the channel drops them all.
+   - `execute_command::<Req, Res>(id, req)` — **loose mode**; mirrors TS loose `executeCommand(id, args)`. For purely dynamic dispatch use `execute_command::<Value, Value>(id, payload)`.
+   - `execute::<C: Command>(req)` — **strict mode**; mirrors TS `executeCommand<K>` with `CommandSchemaMap`. The compile-time `Command` trait pins both request and response types.
+   - `emit_event(event, payload)`.
+   - `add_event_listener(event, cb)` — returns an `impl FnOnce()` unsubscribe closure (mirrors TS's `() => void`). Ignore the return value to leave the listener installed for the lifetime of the registry.
+   - `list_commands()` → `Vec<CommandDef>` (mirrors TS `listCommands()`).
+   - `list_channels()` → connected channel ids (mirrors TS `listChannels()`).
+   - `dispose()` — closes all channels, drops commands, clears listeners. Mirrors TS `dispose()`.
+   - `id()` — registry identifier.
+
+   Intentional Rust-only divergences from the TS reference (forced by the language):
+   - `register_channel` returns a driver future the caller spawns (vs TS's Promise<void>); Rust is runtime-agnostic.
+   - `add_event_listener` returns `impl FnOnce()` (vs TS's `() => void`); same semantics, different syntactic shape.
+   - `emit_event` returns `Result` (vs TS's `void`); serde errors on payload are surfaced at the call site.
 2. **`CommandChannel` trait + `InMemoryChannel`** (`src/channel.rs`) — pluggable transport interface plus an in-memory pair for same-process tests and examples.
 3. **`Command` trait** (`src/command.rs`) — typed `Request`/`Response` associated types and an `async fn handle`. `schema()` returns the JSON Schema advertised on the wire.
 4. **Wire messages** (`src/message.rs`) — the seven `Message` variants, byte-identical to the TS union.
@@ -119,14 +135,28 @@ impl MathService {
 
 MathService.register_all(&registry).await?;
 
-// Free-fn shape (one-offs)
+// Free-fn shape (one-offs). The macro emits `register_<fn>(&registry)`
+// as the registration entry point.
 #[command("greet")]
 async fn greet(name: String) -> Result<String, CommandError> { Ok(format!("hello, {name}")) }
 
-registry.register(greet_command()).await?;
+register_greet(&registry).await?;
 ```
 
 `coralstack-cmd-ipc` re-exports both attributes, so user crates list only one dependency. Generated code auto-derives `Command::schema()` via `schemars::schema_for!`.
+
+### MCP server adapter: `rust/crates/cmd-ipc-mcp/`
+
+Exposes a `CommandRegistry` as an MCP server via `rmcp`. Public commands in the registry appear as MCP tools to any local agent that connects; `tools/list` / `tools/call` route through the registry's normal dispatch. Private (`_`-prefixed) commands are never exposed. Primary consumer is the Flow plugin runtime.
+
+```rust
+use coralstack_cmd_ipc::prelude::*;
+use coralstack_cmd_ipc_mcp::McpServerChannel;
+
+let registry = CommandRegistry::new(Config::default());
+// ... register_command(def, handler) or MyService.register_all(&registry) as needed ...
+McpServerChannel::new(registry).serve_stdio().await?;
+```
 
 ### Worked example: `rust/examples/multi-service/`
 

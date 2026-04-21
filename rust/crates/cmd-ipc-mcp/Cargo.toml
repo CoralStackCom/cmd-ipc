@@ -1,0 +1,25 @@
+[package]
+name = "coralstack-cmd-ipc-mcp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "MCP server adapter that exposes a coralstack-cmd-ipc CommandRegistry as Model Context Protocol tools"
+readme = "README.md"
+keywords = ["mcp", "ipc", "agents", "tools"]
+categories = ["api-bindings", "asynchronous"]
+
+[dependencies]
+coralstack-cmd-ipc = { path = "../cmd-ipc", version = "0.1.0" }
+rmcp = { version = "1.5", default-features = false, features = ["server", "transport-io"] }
+tokio = { version = "1", features = ["rt", "macros", "io-util"] }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+futures.workspace = true
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+rmcp = { version = "1.5", default-features = false, features = ["server", "client", "transport-async-rw"] }

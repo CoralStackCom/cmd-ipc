@@ -106,14 +106,14 @@ fn impl_block_macro_registers_and_executes_across_channel() {
 
         // Root calls add — routes to worker.
         let sum: i64 = reg_a
-            .execute("math.add", AddReq { a: 2, b: 3 })
+            .execute_command("math.add", AddReq { a: 2, b: 3 })
             .await
             .unwrap();
         assert_eq!(sum, 5);
 
         // And sub.
         let diff: i64 = reg_a
-            .execute("math.sub", SubReq { a: 10, b: 4 })
+            .execute_command("math.sub", SubReq { a: 10, b: 4 })
             .await
             .unwrap();
         assert_eq!(diff, 6);
@@ -125,9 +125,12 @@ fn free_fn_macro_registers_via_factory() {
     let (reg_a, _reg_b, _pool) = wire_pair("root", "worker", None, Some("root"));
 
     block_on(async {
-        reg_a.register(greet_command()).await.unwrap();
+        register_greet(&reg_a).await.unwrap();
 
-        let hello: String = reg_a.execute("greet", "world".to_string()).await.unwrap();
+        let hello: String = reg_a
+            .execute_command("greet", "world".to_string())
+            .await
+            .unwrap();
         assert_eq!(hello, "hello, world");
     });
 }
@@ -145,31 +148,36 @@ fn private_command_stays_local() {
 
         // Root cannot see the private command.
         let err = reg_a
-            .execute::<_, String>("_internal.ping", ())
+            .execute_command::<_, String>("_internal.ping", ())
             .await
             .unwrap_err();
         assert!(matches!(err, CommandError::NotFound(_)));
 
         // But the worker itself can still call it locally.
-        let got: String = reg_b.execute("_internal.ping", ()).await.unwrap();
+        let got: String = reg_b.execute_command("_internal.ping", ()).await.unwrap();
         assert_eq!(got, "pong");
     });
 }
 
-/// The free-fn factory returns `impl Command`; we can exercise
-/// `Command::schema()` on it via a thin generic shim.
-fn schema_of<C: Command>(_: &C) -> Option<coralstack_cmd_ipc::CommandSchema> {
-    <C as Command>::schema()
-}
-
 #[test]
-fn free_fn_factory_schema() {
-    let cmd = greet_command();
-    let schema = schema_of(&cmd).expect("macro should populate schema()");
+fn free_fn_macro_exposes_schema_after_registration() {
+    // The free-fn macro emits a `register_<fn>` helper; after calling it,
+    // the registry's list_commands() reflects the auto-derived schema.
+    let reg = CommandRegistry::new(config("solo", None));
+    block_on(async {
+        register_greet(&reg).await.unwrap();
+    });
+
+    let def = reg
+        .list_commands()
+        .into_iter()
+        .find(|d| d.id == "greet")
+        .expect("greet should be registered");
+
+    let schema = def.schema.expect("macro should populate schema");
     assert!(schema.request.is_some());
     assert!(schema.response.is_some());
-
-    // Sanity: response schema for `String` should include "string".
+    // Response schema for `String` should include "string".
     let resp = schema.response.unwrap().to_string();
     assert!(
         resp.contains("string"),
@@ -213,14 +221,39 @@ impl Command for UnnormalizedCommand {
 
 #[test]
 fn registry_normalizes_hand_written_schema() {
+    use coralstack_cmd_ipc::CommandDef;
     use futures::executor::block_on;
 
     let reg = CommandRegistry::new(config("solo", None));
     block_on(async {
-        reg.register(UnnormalizedCommand).await.unwrap();
+        let def = CommandDef {
+            id: UnnormalizedCommand::ID.into(),
+            description: UnnormalizedCommand::DESCRIPTION.map(String::from),
+            schema: UnnormalizedCommand::schema(),
+        };
+        // Register via the closure form. Inline the same
+        // deserialize/handle/serialize wrapper that `__handler_for_command`
+        // provides — but expressed as a plain closure to avoid touching
+        // the hidden macro-facing helper.
+        reg.register_command(def, move |req| {
+            let cmd = UnnormalizedCommand;
+            async move {
+                let typed: serde_json::Value = req;
+                let _ = cmd
+                    .handle(typed)
+                    .await
+                    .map_err(|e| coralstack_cmd_ipc::ExecuteError {
+                        code: coralstack_cmd_ipc::ExecuteErrorCode::InternalError,
+                        message: e.to_string(),
+                    })?;
+                Ok(serde_json::Value::Null)
+            }
+        })
+        .await
+        .unwrap();
     });
 
-    let defs = reg.list_commands_detail();
+    let defs = reg.list_commands();
     let def = defs.iter().find(|d| d.id == "hand.rolled").unwrap();
     let req = def.schema.as_ref().unwrap().request.as_ref().unwrap();
     let resp = def.schema.as_ref().unwrap().response.as_ref().unwrap();

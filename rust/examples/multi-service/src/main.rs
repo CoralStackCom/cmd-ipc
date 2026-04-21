@@ -117,7 +117,7 @@ fn handle_line(root: &CommandRegistry, worker: &CommandRegistry, line: &str) -> 
     match verb {
         "help" => print_help(),
         "list" => {
-            let defs = root.list_commands_detail();
+            let defs = root.list_commands();
             if defs.is_empty() {
                 println!("{}", ui::dim("(no commands registered)"));
             } else {
@@ -166,7 +166,7 @@ fn print_help() {
 /// Interactive call: list commands, pick one by number or id, walk the
 /// request schema to collect field values, execute, print the response.
 fn do_call(root: &CommandRegistry) -> Result<(), String> {
-    let defs = root.list_commands_detail();
+    let defs = root.list_commands();
     if defs.is_empty() {
         return Err("no commands registered".into());
     }
@@ -193,7 +193,7 @@ fn do_call(root: &CommandRegistry) -> Result<(), String> {
         format!("call {} payload={}", def.id, ui::pretty(&request)),
     );
     let start = Instant::now();
-    let result: Result<Value, _> = block_on(root.execute(&def.id, request.clone()));
+    let result: Result<Value, _> = block_on(root.execute_command(&def.id, request.clone()));
     let elapsed = start.elapsed();
     match result {
         Ok(v) => {
@@ -233,7 +233,9 @@ fn do_emit(root: &CommandRegistry, worker: &CommandRegistry, rest: &str) -> Resu
     // the channel.
     let got = Arc::new(Mutex::new(None::<Value>));
     let got_clone = Arc::clone(&got);
-    worker.on_event(event_id, move |payload| {
+    // Returned closure would remove this listener; ignore it since we
+    // want the listener to live until the process exits.
+    let _unsub = worker.add_event_listener(event_id, move |payload| {
         *got_clone.lock().unwrap() = Some(payload);
     });
 

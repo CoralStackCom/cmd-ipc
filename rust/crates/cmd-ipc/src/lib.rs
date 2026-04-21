@@ -30,6 +30,12 @@ pub use message::{
     RegisterResult, True,
 };
 pub use registry::{CommandRegistry, Config};
+
+// Internal helper used by the `#[commands]` macro; not part of the
+// public API despite being re-exported at the crate root so generated
+// code can name it.
+#[doc(hidden)]
+pub use registry::__handler_for_command;
 pub use schema::normalize_schema;
 pub use ttl_map::TtlMap;
 
@@ -48,7 +54,7 @@ pub use serde_json;
 /// ```
 pub mod prelude {
     pub use crate::{
-        command, commands, ChannelError, Command, CommandChannel, CommandError, CommandRegistry,
-        Config, InMemoryChannel,
+        command, commands, ChannelError, Command, CommandChannel, CommandDef, CommandError,
+        CommandRegistry, CommandSchema, Config, InMemoryChannel,
     };
 }
