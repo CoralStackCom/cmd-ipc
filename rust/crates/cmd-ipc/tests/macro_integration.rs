@@ -1,7 +1,7 @@
-//! End-to-end tests for the `#[command]` / `#[commands]` macros.
+//! End-to-end tests for the `#[command]` / `#[command_service]` macros.
 //!
 //! Wires two registries via `InMemoryChannel::pair` and exercises:
-//!   - the impl-block shape (`#[commands] impl Service { #[command(..)] async fn ... }`)
+//!   - the impl-block shape (`#[command_service] impl Service { #[command(..)] async fn ... }`)
 //!   - the free-fn shape (`#[command("id")] async fn ...`)
 //!   - schema population on generated Command impls
 //!   - private-prefix commands never escalating to the router
@@ -33,7 +33,7 @@ struct SubReq {
 
 struct MathService;
 
-#[commands]
+#[command_service]
 impl MathService {
     #[command("math.add", description = "Add two integers")]
     async fn add(&self, req: AddReq) -> Result<i64, CommandError> {
@@ -102,7 +102,7 @@ fn impl_block_macro_registers_and_executes_across_channel() {
 
     block_on(async {
         // Register everything on the worker; commands propagate to root via router.
-        MathService.register_all(&reg_b).await.unwrap();
+        MathService.register(&reg_b).await.unwrap();
 
         // Root calls add — routes to worker.
         let sum: i64 = reg_a
@@ -117,6 +117,29 @@ fn impl_block_macro_registers_and_executes_across_channel() {
             .await
             .unwrap();
         assert_eq!(diff, 6);
+    });
+}
+
+#[test]
+fn strict_execute_via_nested_module_path() {
+    // Exercises the macro-generated `math_service::Add` /
+    // `math_service::Sub` types, which are the strict-mode handles for
+    // `registry.execute::<_>(..)`.
+    let reg = CommandRegistry::new(config("solo", None));
+    block_on(async {
+        MathService.register(&reg).await.unwrap();
+
+        let sum: i64 = reg
+            .execute::<math_service::Add>(AddReq { a: 7, b: 8 })
+            .await
+            .unwrap();
+        assert_eq!(sum, 15);
+
+        let diff: i64 = reg
+            .execute::<math_service::Sub>(SubReq { a: 20, b: 5 })
+            .await
+            .unwrap();
+        assert_eq!(diff, 15);
     });
 }
 
@@ -144,7 +167,7 @@ fn private_command_stays_local() {
     let (reg_a, reg_b, _pool) = wire_pair("root", "worker", None, Some("root"));
 
     block_on(async {
-        MathService.register_all(&reg_b).await.unwrap();
+        MathService.register(&reg_b).await.unwrap();
 
         // Root cannot see the private command.
         let err = reg_a
@@ -199,7 +222,7 @@ impl Command for UnnormalizedCommand {
     async fn handle(&self, _req: serde_json::Value) -> Result<serde_json::Value, CommandError> {
         Ok(serde_json::Value::Null)
     }
-    fn schema() -> Option<coralstack_cmd_ipc::CommandSchema> {
+    fn schema(&self) -> Option<coralstack_cmd_ipc::CommandSchema> {
         Some(coralstack_cmd_ipc::CommandSchema {
             request: Some(serde_json::json!({
                 "$schema": "http://json-schema.org/draft-07/schema#",
@@ -221,36 +244,11 @@ impl Command for UnnormalizedCommand {
 
 #[test]
 fn registry_normalizes_hand_written_schema() {
-    use coralstack_cmd_ipc::CommandDef;
     use futures::executor::block_on;
 
     let reg = CommandRegistry::new(config("solo", None));
     block_on(async {
-        let def = CommandDef {
-            id: UnnormalizedCommand::ID.into(),
-            description: UnnormalizedCommand::DESCRIPTION.map(String::from),
-            schema: UnnormalizedCommand::schema(),
-        };
-        // Register via the closure form. Inline the same
-        // deserialize/handle/serialize wrapper that `__handler_for_command`
-        // provides — but expressed as a plain closure to avoid touching
-        // the hidden macro-facing helper.
-        reg.register_command(def, move |req| {
-            let cmd = UnnormalizedCommand;
-            async move {
-                let typed: serde_json::Value = req;
-                let _ = cmd
-                    .handle(typed)
-                    .await
-                    .map_err(|e| coralstack_cmd_ipc::ExecuteError {
-                        code: coralstack_cmd_ipc::ExecuteErrorCode::InternalError,
-                        message: e.to_string(),
-                    })?;
-                Ok(serde_json::Value::Null)
-            }
-        })
-        .await
-        .unwrap();
+        reg.register_command(UnnormalizedCommand).await.unwrap();
     });
 
     let defs = reg.list_commands();

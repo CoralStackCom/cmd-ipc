@@ -1,0 +1,187 @@
+---
+title: Quick Start
+description: Build your first cmd-ipc application in Rust
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+A calculator where math operations run on a dedicated **`CommandRegistry`** wired to a root registry via `InMemoryChannel`. The root calls worker commands through the channel, events fan out across the pair, and private commands stay local. The same pattern works across real process boundaries once you swap the in-memory channel for a transport — see [Channels](/cmd-ipc/getting-started/rust/channels/).
+
+See also the full [multi-service example](/cmd-ipc/examples/rust/multi-service/), which follows the same structure with a REPL on top.
+
+## Requirements
+
+This guide uses **[tokio](https://tokio.rs/)** as the async runtime. The `coralstack-cmd-ipc` crate itself is runtime-agnostic (it only depends on `futures`), but every example in this guide spawns channel drivers with `tokio::spawn` and drives `main` with `#[tokio::main]`. Swap tokio for `async-std`, `smol`, or `futures::executor::ThreadPool` if you prefer — the library doesn't care.
+
+```toml
+# Cargo.toml
+[dependencies]
+coralstack-cmd-ipc = "0.1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+schemars = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+```
+
+## Step 1: Define Commands
+
+A `#[command_service]` impl block turns an ordinary `impl` into a set of typed commands. Each `#[command("id")]` method becomes a handler, and the `Serialize` / `Deserialize` / `JsonSchema` derives on the request / response types drive schema generation on the wire.
+
+```rust
+// src/calc_service.rs
+use coralstack_cmd_ipc::prelude::*;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
+#[derive(Deserialize, Serialize, JsonSchema)]
+pub struct CalcReq { pub a: f64, pub b: f64 }
+
+#[derive(Deserialize, Serialize, JsonSchema)]
+pub struct CalcRes { pub result: f64 }
+
+pub struct CalcService;
+
+#[command_service]
+impl CalcService {
+    #[command("calc.add", description = "Adds two numbers together")]
+    async fn add(&self, req: CalcReq) -> Result<CalcRes, CommandError> {
+        Ok(CalcRes { result: req.a + req.b })
+    }
+
+    #[command("calc.multiply", description = "Multiplies two numbers together")]
+    async fn multiply(&self, req: CalcReq) -> Result<CalcRes, CommandError> {
+        Ok(CalcRes { result: req.a * req.b })
+    }
+}
+```
+
+<Aside type="tip">
+  Command IDs starting with `_` are **private** — they stay local and never propagate across channels. Handy for logging, tracing, or per-process utilities you don't want peers to see.
+</Aside>
+
+For one-off commands that don't warrant a service struct, use [`DynCommand`](/cmd-ipc/getting-started/rust/defining-commands/) with an inline closure, or attach `#[command]` directly to a free `async fn`.
+
+## Step 2: Set Up the Registry and Register Commands
+
+A `CommandRegistry` owns the command table, routing, and channel connections. Build one per process (or per logical service) and install your commands with `.register(&registry)`. Since `register` is `async`, we do this inside a `#[tokio::main]` function:
+
+```rust
+// src/main.rs
+use coralstack_cmd_ipc::prelude::*;
+mod calc_service;
+use calc_service::{CalcReq, CalcRes, CalcService};
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    // Worker registry — owns the calc commands. `router_channel` tells
+    // it where to escalate commands it doesn't serve locally.
+    let worker = CommandRegistry::new(Config {
+        id: Some("calc-worker".into()),
+        router_channel: Some("main".into()),
+        ..Default::default()
+    });
+
+    // `.register(&registry)` installs every `#[command]`-tagged method
+    // from `CalcService` in one shot.
+    CalcService.register(&worker).await?;
+
+    // Root registry — no `router_channel` (it's the terminal point).
+    let root = CommandRegistry::new(Config {
+        id: Some("main".into()),
+        ..Default::default()
+    });
+
+    // Private command, registered via `DynCommand` for a one-off closure.
+    root.register_command(DynCommand::new(
+        "_main.log",
+        |payload: serde_json::Value| async move {
+            eprintln!("[Main] {payload}");
+            Ok(serde_json::Value::Null)
+        },
+    )).await?;
+
+    // ... (Step 3 continues inside the same `main`)
+    Ok(())
+}
+```
+
+## Step 3: Add Channels
+
+A channel is the pipe between two registries. `InMemoryChannel::pair` wires two halves of an in-process pair — the same API a real transport (WebSocket, stdio, gRPC, etc.) would expose via the `CommandChannel` trait.
+
+```rust
+// continues inside `async fn main`:
+
+// `InMemoryChannel::pair(peer_a_id, peer_b_id)` returns the two halves
+// from each side's perspective. The `Arc<InMemoryChannel>` values
+// coerce to `Arc<dyn CommandChannel>` at the `register_channel` call
+// site automatically.
+let (ch_for_root, ch_for_worker) = InMemoryChannel::pair("calc-worker", "main");
+
+// Attach the channel to each registry. `register_channel` returns a
+// driver future that we spawn onto tokio. The driver consumes inbound
+// messages and dispatches them into the registry until the channel
+// closes.
+let root_driver   = root.register_channel(ch_for_root).await?;
+let worker_driver = worker.register_channel(ch_for_worker).await?;
+tokio::spawn(root_driver);
+tokio::spawn(worker_driver);
+```
+
+Once both drivers are running, the registries perform a handshake: each side advertises its local commands via `list.commands.response`, and any new `register_command` call on a child registry escalates upstream. From this point on, the root sees `calc.add` and `calc.multiply` as routable commands even though they live on the worker.
+
+## Step 4: Call Commands
+
+With the channel up, the root registry dispatches through it for any command it doesn't own locally. Two dispatch modes:
+
+```rust
+// Loose mode — runtime-known command id. The response type must be
+// pinned so `execute_command` knows what to deserialize into; easiest
+// to pin via the `let` binding's ascription.
+let sum: CalcRes = root
+    .execute_command("calc.add", CalcReq { a: 5.0, b: 3.0 })
+    .await?;
+println!("5 + 3 = {}", sum.result); // 8
+
+// Strict mode — compile-time type identity. The `#[command_service]`
+// macro generates a `calc_service::Add` (and `Multiply`) struct you
+// can reach without constructing a service instance. The request and
+// response types are pinned by the `Command` impl on `Multiply`, so
+// no type ascription is needed on the `let` — `product` is inferred
+// as `CalcRes`.
+let product = root
+    .execute::<calc_service::Multiply>(CalcReq { a: 4.0, b: 7.0 })
+    .await?;
+println!("4 × 7 = {}", product.result); // 28
+
+// Local private command — served on the root, never escalated.
+root.execute_command::<_, serde_json::Value>(
+    "_main.log",
+    serde_json::json!({ "level": "info", "message": "Calculations complete!" }),
+).await?;
+```
+
+Events work the same way — emit on either side, listen on either side:
+
+```rust
+root.add_event_listener("worker.ready", |payload| {
+    println!("Worker ready: {payload}");
+});
+
+worker.emit_event("worker.ready", serde_json::json!({
+    "worker_id": "calc-worker",
+    "command_count": 2,
+}))?;
+```
+
+Strict mode (`execute::<calc_service::Add>(..)`) and loose mode (`execute_command("calc.add", ..)`) cover both ends of the typing spectrum. See [Type Safety](/cmd-ipc/getting-started/rust/type-safety/) for the tradeoffs and when to reach for each.
+
+## Key Points
+
+- **Commands are typed functions** — `#[command_service]` + `#[command]` binds methods to IDs; `Serialize` / `Deserialize` / `JsonSchema` derives drive the wire schema.
+- **Registries own the command table** — one per process or logical service, wired by channels.
+- **Channels are pluggable** — `InMemoryChannel` for in-process tests, implement the `CommandChannel` trait for any transport.
+- **Private commands** (prefixed with `_`) stay local to the registering process.
+- **Events** broadcast to all connected registries with no response expected.
+- **Runtime is your choice** — this guide uses tokio, but any `Future` executor works.

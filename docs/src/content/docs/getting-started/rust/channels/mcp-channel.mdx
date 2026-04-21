@@ -34,7 +34,7 @@ use coralstack_cmd_ipc::prelude::*;
 use coralstack_cmd_ipc_mcp::McpServerChannel;
 
 let registry = CommandRegistry::new(Config::default());
-MyService.register_all(&registry).await?;
+MyService.register(&registry).await?;
 
 let mcp = Arc::new(McpServerChannel::new("mcp"));
 let driver = registry.register_channel(mcp.clone()).await?;

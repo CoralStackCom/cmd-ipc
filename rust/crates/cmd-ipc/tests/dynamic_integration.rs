@@ -1,5 +1,4 @@
-//! End-to-end tests for the dynamic registration API: `register_command`
-//! with a runtime-string `CommandDef` and a plain async closure.
+//! End-to-end tests for runtime-constructed commands via [`DynCommand`].
 //!
 //! These tests exercise the handler-as-closure path used by scripting
 //! runtimes and FFI bridges. The `#[commands]` macro path is covered
@@ -15,7 +14,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use coralstack_cmd_ipc::prelude::*;
-use coralstack_cmd_ipc::{Config, ExecuteError};
+use coralstack_cmd_ipc::Config;
 use futures::executor::{block_on, ThreadPool};
 use futures::task::SpawnExt;
 use serde_json::{json, Value};
@@ -61,45 +60,18 @@ fn wire_pair(
     (reg_a, reg_b, ch_for_a, ch_for_b, pool)
 }
 
-/// Convenience: build a minimal `CommandDef` with just an id.
-fn def(id: &str) -> CommandDef {
-    CommandDef {
-        id: id.into(),
-        description: None,
-        schema: None,
-    }
-}
-
-/// Wraps a sync closure in an async one for `register_command`.
-fn sync_fn<F>(
-    f: F,
-) -> impl Fn(Value) -> futures::future::Ready<Result<Value, ExecuteError>> + Send + Sync + 'static
-where
-    F: Fn(Value) -> Result<Value, ExecuteError> + Send + Sync + 'static,
-{
-    move |req| futures::future::ready(f(req))
-}
-
 // ---------- tests ----------
 
 #[test]
 fn register_command_executes_locally() {
     let reg = CommandRegistry::new(config("solo", None));
     block_on(async {
-        let d = CommandDef {
-            id: "math.double".into(),
-            description: Some("Double the input integer".into()),
-            schema: None,
-        };
-        reg.register_command(
-            d,
-            sync_fn(|req| {
-                let n = req.get("n").and_then(Value::as_i64).unwrap_or(0);
-                Ok(json!(n * 2))
-            }),
-        )
-        .await
-        .unwrap();
+        let cmd = DynCommand::new("math.double", |req: Value| async move {
+            let n = req.get("n").and_then(Value::as_i64).unwrap_or(0);
+            Ok(json!(n * 2))
+        })
+        .description("Double the input integer");
+        reg.register_command(cmd).await.unwrap();
 
         let got: i64 = reg
             .execute_command("math.double", json!({ "n": 21 }))
@@ -114,7 +86,10 @@ fn register_command_propagates_across_channel() {
     let (reg_a, reg_b, _ca, _cb, _pool) = wire_pair("root", "worker", None, Some("root"));
     block_on(async {
         reg_b
-            .register_command(def("work.echo"), sync_fn(Ok))
+            .register_command(DynCommand::new(
+                "work.echo",
+                |req: Value| async move { Ok(req) },
+            ))
             .await
             .unwrap();
 
@@ -148,14 +123,9 @@ fn register_command_normalizes_schema() {
         })),
     };
     block_on(async {
-        let d = CommandDef {
-            id: "hand.rolled".into(),
-            description: None,
-            schema: Some(unnormalized),
-        };
-        reg.register_command(d, sync_fn(|_req| Ok(Value::Null)))
-            .await
-            .unwrap();
+        let cmd = DynCommand::new("hand.rolled", |_req: Value| async move { Ok(Value::Null) })
+            .schema(unnormalized);
+        reg.register_command(cmd).await.unwrap();
 
         let def: &CommandDef = &reg.list_commands()[0];
         let req = def.schema.as_ref().unwrap().request.as_ref().unwrap();
@@ -173,7 +143,9 @@ fn register_command_private_prefix_stays_local() {
     let (reg_a, reg_b, _ca, _cb, _pool) = wire_pair("root", "worker", None, Some("root"));
     block_on(async {
         reg_b
-            .register_command(def("_secret.ping"), sync_fn(|_| Ok(json!("pong"))))
+            .register_command(DynCommand::new("_secret.ping", |_req: Value| async move {
+                Ok(json!("pong"))
+            }))
             .await
             .unwrap();
 
@@ -203,11 +175,12 @@ fn register_command_private_prefix_stays_local() {
 fn channel_close_removes_its_commands() {
     let (reg_a, reg_b, _ca, cb, _pool) = wire_pair("root", "worker", None, Some("root"));
     block_on(async {
-        // Worker registers a command — `register_command` on a registry
-        // with a `router_channel` escalates a `register.command.request`
-        // up to the root.
+        // Worker registers a command — a registry with a `router_channel`
+        // escalates the registration upstream to the root.
         reg_b
-            .register_command(def("work.ping"), sync_fn(|_| Ok(json!("pong"))))
+            .register_command(DynCommand::new("work.ping", |_req: Value| async move {
+                Ok(json!("pong"))
+            }))
             .await
             .unwrap();
 

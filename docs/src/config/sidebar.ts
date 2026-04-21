@@ -32,11 +32,11 @@ export const sidebar: SidebarSection[] = [
     label: 'Getting Started',
     items: [
       { label: 'Installation', slug: 'getting-started/installation' },
-      { label: 'Quick Start', slug: 'getting-started/quick-start' },
       { label: 'Channels', slug: 'getting-started/channels' },
       {
         label: 'TypeScript',
         items: [
+          { label: 'Quick Start', slug: 'getting-started/typescript/quick-start' },
           {
             label: 'Defining Commands',
             slug: 'getting-started/typescript/defining-commands',
@@ -66,6 +66,7 @@ export const sidebar: SidebarSection[] = [
       {
         label: 'Rust',
         items: [
+          { label: 'Quick Start', slug: 'getting-started/rust/quick-start' },
           {
             label: 'Defining Commands',
             slug: 'getting-started/rust/defining-commands',
@@ -108,7 +109,7 @@ export const sidebar: SidebarSection[] = [
       {
         label: 'Rust',
         items: [
-          { label: 'Multi-Service', slug: 'examples/rust/multi-service' },
+          { label: 'Multi-Service CLI', slug: 'examples/rust/multi-service' },
         ],
       },
     ],

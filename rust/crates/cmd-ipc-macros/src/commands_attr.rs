@@ -1,15 +1,15 @@
-//! Codegen for `#[commands] impl Host { ... }`.
+//! Codegen for `#[command_service] impl Host { ... }`.
 //!
 //! For every `#[command("id", ...)]`-tagged method inside the impl
 //! block, we emit:
 //!   1. A sibling wrapper struct implementing `Command`.
-//!   2. An entry in the host type's generated `register_all` helper.
+//!   2. An entry in the host type's generated `register` helper.
 //!
 //! The original impl block is preserved (stripped of `#[command]`
 //! attributes) so users can still call the methods directly.
 
 use proc_macro2::{Span, TokenStream};
-use quote::{quote, ToTokens};
+use quote::{format_ident, quote, ToTokens};
 use syn::{Attribute, ImplItem, ItemImpl, LitStr};
 
 use crate::attr_args::CommandAttrArgs;
@@ -19,7 +19,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
     if !attr.is_empty() {
         return Err(syn::Error::new(
             Span::call_site(),
-            "#[commands] takes no arguments",
+            "#[command_service] takes no arguments",
         ));
     }
 
@@ -29,13 +29,13 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
     if item_impl.trait_.is_some() {
         return Err(syn::Error::new_spanned(
             &item_impl,
-            "#[commands] cannot be applied to a trait impl block",
+            "#[command_service] cannot be applied to a trait impl block",
         ));
     }
     if !item_impl.generics.params.is_empty() {
         return Err(syn::Error::new_spanned(
             &item_impl.generics,
-            "#[commands] does not yet support generic host types",
+            "#[command_service] does not yet support generic host types",
         ));
     }
 
@@ -43,7 +43,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
     let host_ident = host_ident_from_self_ty(&item_impl.self_ty)?;
 
     let mut extra_items = TokenStream::new();
-    // (id_string, struct_ident) pairs for building `register_all`.
+    // (id_string, struct_ident) pairs for building `register`.
     let mut registrations: Vec<(LitStr, syn::Ident)> = Vec::new();
     // Collision check: fail if two methods share the same id.
     let mut seen_ids: Vec<LitStr> = Vec::new();
@@ -67,7 +67,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
             let mut err = syn::Error::new_spanned(
                 &args.id,
                 format!(
-                    "duplicate command id `{}` in this #[commands] block",
+                    "duplicate command id `{}` in this #[command_service] block",
                     args.id.value()
                 ),
             );
@@ -94,40 +94,36 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
     if registrations.is_empty() {
         return Err(syn::Error::new_spanned(
             &item_impl,
-            "#[commands] impl block contains no #[command(\"...\")] methods",
+            "#[command_service] impl block contains no #[command(\"...\")] methods",
         ));
     }
 
-    // Build the inherent `register_all` method as its own impl block to
-    // avoid threading user methods. Each generated wrapper struct
-    // implements `Command` — we build its CommandDef inline and use the
-    // crate-private `__handler_for_command` helper to produce the
-    // handler closure, matching what users would write by hand.
+    // Module name derived from the host: `MathService` → `math_service`.
+    // The generated Command structs live inside this module so users can
+    // reach them for strict-mode `execute::<math_service::Add>(..)`.
+    let mod_ident = format_ident!("{}", pascal_to_snake(&host_ident.to_string()));
+
+    // Build the inherent `register` method. Each generated wrapper struct
+    // lives at `self::mod_ident::Name`; we pass an instance (with a
+    // cloned `Arc<Host>`) to the typed `register_command`.
     let register_calls = registrations.iter().map(|(_, ident)| {
         quote! {
-            {
-                let cmd = #ident { host: ::std::sync::Arc::clone(&host) };
-                let def = ::coralstack_cmd_ipc::CommandDef {
-                    id: <#ident as ::coralstack_cmd_ipc::Command>::ID.to_string(),
-                    description: <#ident as ::coralstack_cmd_ipc::Command>::DESCRIPTION
-                        .map(::std::string::ToString::to_string),
-                    schema: <#ident as ::coralstack_cmd_ipc::Command>::schema(),
-                };
-                registry
-                    .register_command(def, ::coralstack_cmd_ipc::__handler_for_command(cmd))
-                    .await?;
-            }
+            registry
+                .register_command(
+                    self::#mod_ident::#ident { host: ::std::sync::Arc::clone(&host) }
+                )
+                .await?;
         }
     });
 
-    let register_all_impl = quote! {
+    let register_impl = quote! {
         impl #host_ty_tokens {
             /// Registers every `#[command]`-tagged method on `self` with
             /// the given registry. Consumes `self` by arc-wrapping it so
             /// each generated handler holds a shared reference to the
             /// host.
             #[allow(clippy::needless_pass_by_value)]
-            pub async fn register_all(
+            pub async fn register(
                 self,
                 registry: &::coralstack_cmd_ipc::CommandRegistry,
             ) -> ::core::result::Result<(), ::coralstack_cmd_ipc::CommandError> {
@@ -138,11 +134,45 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
         }
     };
 
+    // Wrap the per-method Command structs in a module named after the
+    // host. `use super::*` pulls the host type and any user imports into
+    // the nested scope so `Arc<HostType>` resolves. `#[allow(...)]` is
+    // needed because snake_case module names triggers lints when the
+    // host already has a snake_case name.
+    let extra_items_mod = quote! {
+        #[doc(hidden)]
+        #[allow(non_snake_case, clippy::module_name_repetitions)]
+        pub mod #mod_ident {
+            use super::*;
+            #extra_items
+        }
+    };
+
     Ok(quote! {
         #item_impl
-        #extra_items
-        #register_all_impl
+        #extra_items_mod
+        #register_impl
     })
+}
+
+/// Converts a PascalCase identifier to snake_case.
+///
+/// `MathService` → `math_service`. `HTTPServer` → `h_t_t_p_server`
+/// (acceptable for typical Pascal-case service names; no smart
+/// acronym handling).
+fn pascal_to_snake(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 4);
+    for (i, ch) in s.chars().enumerate() {
+        if ch.is_uppercase() {
+            if i > 0 {
+                out.push('_');
+            }
+            out.push(ch.to_ascii_lowercase());
+        } else {
+            out.push(ch);
+        }
+    }
+    out
 }
 
 fn find_command_attr(attrs: &[Attribute]) -> Option<(usize, &Attribute)> {
@@ -157,12 +187,12 @@ fn host_ident_from_self_ty(ty: &syn::Type) -> syn::Result<syn::Ident> {
     let syn::Type::Path(tp) = ty else {
         return Err(syn::Error::new_spanned(
             ty,
-            "#[commands] host type must be a simple named type",
+            "#[command_service] host type must be a simple named type",
         ));
     };
     tp.path
         .segments
         .last()
         .map(|s| s.ident.clone())
-        .ok_or_else(|| syn::Error::new_spanned(ty, "empty path for #[commands] host type"))
+        .ok_or_else(|| syn::Error::new_spanned(ty, "empty path for #[command_service] host type"))
 }

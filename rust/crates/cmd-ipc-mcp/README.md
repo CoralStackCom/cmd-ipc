@@ -25,18 +25,16 @@ use coralstack_cmd_ipc_mcp::McpServerChannel;
 async fn main() -> anyhow::Result<()> {
     let registry = CommandRegistry::new(Config::default());
 
-    // Register commands (via the `#[command]` macro, `register_command`,
-    // or any other path). Every public command is reflected as an MCP
-    // tool. Private commands (id starts with `_`) are never exposed.
-    let def = CommandDef {
-        id: "plugin.say_hi".into(),
-        description: Some("Greet someone".into()),
-        schema: None,
-    };
+    // Register commands — either a `#[command]`-annotated function /
+    // method, or a runtime-built `DynCommand` for dynamic ids. Every
+    // public command is reflected as an MCP tool. Private commands
+    // (id starts with `_`) are never exposed.
     registry
         .register_command(
-            def,
-            Box::new(|_req| Box::pin(async move { Ok(serde_json::json!("hi")) })),
+            DynCommand::new("plugin.say_hi", |_req: serde_json::Value| async move {
+                Ok(serde_json::json!("hi"))
+            })
+            .description("Greet someone"),
         )
         .await?;
 

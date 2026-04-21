@@ -5,7 +5,7 @@ use coralstack_cmd_ipc::prelude::*;
 
 pub struct GreetService;
 
-#[commands]
+#[command_service]
 impl GreetService {
     #[command("greet.hello", description = "Greet someone by name")]
     async fn hello(&self, name: String) -> Result<String, CommandError> {

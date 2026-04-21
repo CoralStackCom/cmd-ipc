@@ -97,7 +97,7 @@ with what the TypeScript implementation sends in
 ## What this example proves
 
 - **`#[commands]` macro** registers methods as typed commands with a
-  single `Service.register_all(&registry).await?` call, mirroring the
+  single `Service.register(&registry).await?` call, mirroring the
   TS `@Command` + `registerCommands()` UX.
 - **Cross-registry routing** — `math.*` is handled on the worker yet
   callable from the root, exercising the same escalation path used by

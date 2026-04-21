@@ -26,6 +26,7 @@ use std::time::Duration;
 
 use futures::channel::oneshot;
 use futures::future::BoxFuture;
+use futures::FutureExt;
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
@@ -67,35 +68,6 @@ impl Default for Config {
 
 type HandlerFn = dyn Fn(Value) -> BoxFuture<'static, Result<Value, ExecuteError>> + Send + Sync;
 type EventListener = Arc<dyn Fn(Value) + Send + Sync>;
-
-/// Internal helper used by the `#[commands]` macro to wrap a typed
-/// [`Command`] implementation in a closure suitable for
-/// [`CommandRegistry::register_command`]. Not part of the public API.
-#[doc(hidden)]
-pub fn __handler_for_command<C: Command>(
-    cmd: C,
-) -> impl Fn(Value) -> BoxFuture<'static, Result<Value, ExecuteError>> + Send + Sync + 'static {
-    use futures::FutureExt;
-    let cmd = Arc::new(cmd);
-    move |value: Value| {
-        let cmd = cmd.clone();
-        async move {
-            let req: C::Request = serde_json::from_value(value).map_err(|e| ExecuteError {
-                code: ExecuteErrorCode::InvalidRequest,
-                message: e.to_string(),
-            })?;
-            let res = cmd
-                .handle(req)
-                .await
-                .map_err(|e| command_error_to_execute(&e, C::ID))?;
-            serde_json::to_value(res).map_err(|e| ExecuteError {
-                code: ExecuteErrorCode::InternalError,
-                message: e.to_string(),
-            })
-        }
-        .boxed()
-    }
-}
 
 struct LocalEntry {
     handler: Arc<HandlerFn>,
@@ -214,50 +186,62 @@ impl CommandRegistry {
         v
     }
 
-    /// Registers a command on this registry.
+    /// Register a command on this registry.
     ///
-    /// Mirrors the TypeScript library's `registerCommand(command, handler)`.
-    /// The [`CommandDef`] carries the id, description, and JSON Schema
-    /// advertised on the wire. The `handler` is any async closure taking
-    /// a JSON request value and returning a future that resolves to a
-    /// JSON response value (or an [`ExecuteError`]) — the registry boxes
-    /// and stores it internally.
+    /// The single registration entry point, covering both compile-time
+    /// and runtime commands:
+    ///
+    /// - **Compile-time**: pass an instance of a type that implements
+    ///   [`Command`]. The `#[command]` / `#[commands]` macros generate
+    ///   such types from a plain `async fn`.
+    /// - **Runtime**: pass a [`DynCommand`] carrying owned id /
+    ///   description / schema and a closure handler.
+    ///
+    /// Mirrors the TypeScript library's `registerCommand`.
     ///
     /// - Commands whose id starts with `_` stay local: they are never
     ///   escalated to a `router_channel` and never advertised to peers
     ///   via `list.commands.response`.
     /// - Non-private commands are escalated upstream if this registry
-    ///   has a `router_channel`; the local entry is only committed after
-    ///   the router acks.
-    /// - The schema on `def` is normalized via
+    ///   has a `router_channel`; the local entry is only committed
+    ///   after the router acks.
+    /// - The advertised schema is normalized via
     ///   [`crate::schema::normalize_schema`] on the way in, so every
     ///   schema leaving the registry is language-agnostic JSON Schema
     ///   regardless of how the caller built it.
-    ///
-    /// For commands that have a compile-time [`Command`] trait impl,
-    /// prefer the `#[commands]` macro or call [`execute`](Self::execute)
-    /// to invoke; this method handles both macro-generated registrations
-    /// and hand-written dynamic handlers uniformly.
-    pub async fn register_command<F, Fut>(
-        &self,
-        def: CommandDef,
-        handler: F,
-    ) -> Result<(), CommandError>
-    where
-        F: Fn(Value) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<Value, ExecuteError>> + Send + 'static,
-    {
-        let stored: Arc<HandlerFn> =
-            Arc::new(move |v: Value| Box::pin(handler(v)) as BoxFuture<'static, _>);
-        let id = def.id.clone();
+    pub async fn register_command<C: Command>(&self, cmd: C) -> Result<(), CommandError> {
+        let id = cmd.id().to_string();
+        let description = cmd.description().map(str::to_string);
+        let schema = cmd.schema().map(crate::schema::normalize_command_schema);
         let is_private = id.starts_with('_');
-        let normalized_def = CommandDef {
-            id: def.id,
-            description: def.description,
-            schema: def.schema.map(crate::schema::normalize_command_schema),
+        let def = CommandDef {
+            id: id.clone(),
+            description,
+            schema,
         };
-        self.register_inner(id, stored, normalized_def, is_private)
-            .await
+        let handler: Arc<HandlerFn> = Arc::new({
+            let cmd = Arc::new(cmd);
+            move |value: Value| {
+                let cmd = cmd.clone();
+                async move {
+                    let req: C::Request =
+                        serde_json::from_value(value).map_err(|e| ExecuteError {
+                            code: ExecuteErrorCode::InvalidRequest,
+                            message: e.to_string(),
+                        })?;
+                    let res = cmd
+                        .handle(req)
+                        .await
+                        .map_err(|e| command_error_to_execute(&e, cmd.id()))?;
+                    serde_json::to_value(res).map_err(|e| ExecuteError {
+                        code: ExecuteErrorCode::InternalError,
+                        message: e.to_string(),
+                    })
+                }
+                .boxed()
+            }
+        });
+        self.register_inner(id, handler, def, is_private).await
     }
 
     async fn register_inner(

@@ -11,7 +11,7 @@
 //!
 //! See [`message`] for the wire format, [`ttl_map`] for the storage
 //! primitive shared by the registry's reply/route/event tables, and
-//! [`macro@command`] / [`macro@commands`] for the attribute macros that
+//! [`macro@command`] / [`macro@command_service`] for the attribute macros that
 //! let you register commands next to the code that implements them.
 
 pub mod channel;
@@ -23,7 +23,7 @@ pub mod schema;
 pub mod ttl_map;
 
 pub use channel::{CommandChannel, InMemoryChannel};
-pub use command::Command;
+pub use command::{Command, DynCommand};
 pub use error::{ChannelError, CommandError, ExecuteErrorCode, RegisterErrorCode};
 pub use message::{
     CommandDef, CommandSchema, ExecuteError, ExecuteResult, False, Message, MessageId,
@@ -31,11 +31,6 @@ pub use message::{
 };
 pub use registry::{CommandRegistry, Config};
 
-// Internal helper used by the `#[commands]` macro; not part of the
-// public API despite being re-exported at the crate root so generated
-// code can name it.
-#[doc(hidden)]
-pub use registry::__handler_for_command;
 pub use schema::normalize_schema;
 pub use ttl_map::TtlMap;
 
@@ -43,7 +38,7 @@ pub use ttl_map::TtlMap;
 // macros. Users should not reference these directly; they're here so
 // generated code can name stable paths even if the user's crate doesn't
 // list these deps individually.
-pub use coralstack_cmd_ipc_macros::{command, commands};
+pub use coralstack_cmd_ipc_macros::{command, command_service};
 pub use schemars;
 pub use serde_json;
 
@@ -54,7 +49,7 @@ pub use serde_json;
 /// ```
 pub mod prelude {
     pub use crate::{
-        command, commands, ChannelError, Command, CommandChannel, CommandDef, CommandError,
-        CommandRegistry, CommandSchema, Config, InMemoryChannel,
+        command, command_service, ChannelError, Command, CommandChannel, CommandDef, CommandError,
+        CommandRegistry, CommandSchema, Config, DynCommand, InMemoryChannel,
     };
 }

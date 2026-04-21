@@ -10,7 +10,7 @@ Reference for the Rust crates. Full rustdoc with all generics, trait bounds, and
 | Crate | docs.rs | crates.io | Purpose |
 |---|---|---|---|
 | `coralstack-cmd-ipc` | [docs.rs](https://docs.rs/coralstack-cmd-ipc) | [crates.io](https://crates.io/crates/coralstack-cmd-ipc) | Core registry, channels, protocol |
-| `coralstack-cmd-ipc-macros` | [docs.rs](https://docs.rs/coralstack-cmd-ipc-macros) | [crates.io](https://crates.io/crates/coralstack-cmd-ipc-macros) | `#[command]` / `#[commands]` attribute macros |
+| `coralstack-cmd-ipc-macros` | [docs.rs](https://docs.rs/coralstack-cmd-ipc-macros) | [crates.io](https://crates.io/crates/coralstack-cmd-ipc-macros) | `#[command]` / `#[command_service]` attribute macros |
 | `coralstack-cmd-ipc-mcp` | [docs.rs](https://docs.rs/coralstack-cmd-ipc-mcp) | [crates.io](https://crates.io/crates/coralstack-cmd-ipc-mcp) | MCP server adapter (via `rmcp`) |
 
 <Aside type="tip">
@@ -23,7 +23,7 @@ Reference for the Rust crates. Full rustdoc with all generics, trait bounds, and
 use coralstack_cmd_ipc::prelude::*;
 ```
 
-Brings into scope: `command`, `commands`, `ChannelError`, `Command`, `CommandChannel`, `CommandDef`, `CommandError`, `CommandRegistry`, `CommandSchema`, `Config`, `InMemoryChannel`.
+Brings into scope: `command`, `command_service`, `ChannelError`, `Command`, `CommandChannel`, `CommandDef`, `CommandError`, `CommandRegistry`, `CommandSchema`, `Config`, `DynCommand`, `InMemoryChannel`.
 
 ## CommandRegistry
 
@@ -54,7 +54,7 @@ let registry = CommandRegistry::new(Config {
 
 | Method | Mirrors TS | Notes |
 |---|---|---|
-| `register_command(def, handler)` | `registerCommand` | Boxes the handler internally |
+| `register_command(cmd)` | `registerCommand` | Single entry point. Takes any `C: Command` — typed `#[command]`-macro structs for compile-time commands, [`DynCommand`](#command-trait) for runtime-constructed commands |
 | `register_channel(channel)` | `registerChannel` | Returns a driver future — spawn it on your executor |
 | `execute_command::<Req, Res>(id, req)` | loose `executeCommand` | Use `::<Value, Value>` for fully dynamic dispatch |
 | `execute::<C>(req)` | strict `executeCommand<K>` | `C: Command` pins request and response types |
@@ -75,7 +75,7 @@ Strict-mode typing — the Rust equivalent of `CommandSchemaMap`.
 
 ```rust
 use coralstack_cmd_ipc::prelude::*;
-use schemars::JsonSchema;
+use schemars::{schema_for, JsonSchema};
 use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize, Serialize, JsonSchema)]
@@ -85,18 +85,57 @@ struct Add;
 
 impl Command for Add {
     const ID: &'static str = "math.add";
+    const DESCRIPTION: Option<&'static str> = Some("Add two integers");
     type Request = AddReq;
     type Response = i64;
+
+    async fn handle(&self, req: AddReq) -> Result<i64, CommandError> {
+        Ok(req.a + req.b)
+    }
+
+    // Optional — omit to skip schema advertising. Without a schema,
+    // cross-language peers fall back to permissive validation.
+    fn schema(&self) -> Option<CommandSchema> {
+        Some(CommandSchema {
+            request: Some(serde_json::to_value(schema_for!(AddReq)).unwrap()),
+            response: None,
+        })
+    }
 }
-```
 
-Then execute in strict mode:
+// Register the typed command. The id, description, schema, and
+// request/response adapter are all pulled from the `Command` impl.
+registry.register_command(Add).await?;
 
-```rust
+// Strict call — request and response types checked at compile time.
 let result: i64 = registry.execute::<Add>(AddReq { a: 2, b: 3 }).await?;
 ```
 
-The `#[command]` / `#[commands]` macros generate the `Command` impl automatically — see [Defining Commands](/cmd-ipc/getting-started/rust/defining-commands/).
+In practice you'd use `#[command("math.add")] async fn add(&self, req: AddReq) -> Result<i64, CommandError> { ... }` — the `#[command]` / `#[command_service]` macros generate the `Command` impl (including `schema()`) and a `register_*` / `.register(&registry)` helper that calls `register_command` for you. See [Defining Commands](/cmd-ipc/getting-started/rust/defining-commands/).
+
+### Runtime-constructed commands: `DynCommand`
+
+When the id or schema is only known at runtime (plugin runtimes, FFI, scripting hosts), build a [`DynCommand`](#command-trait) and register it the same way. There is no separate "dyn" registration method — `DynCommand` implements `Command`, so it goes through `register_command` alongside typed commands:
+
+```rust
+use serde_json::{json, Value};
+
+// Dynamic id, `Value` in/out — simplest form.
+let cmd = DynCommand::new(runtime_id, |req: Value| async move {
+    Ok(json!({ "echoed": req }))
+});
+registry.register_command(cmd).await?;
+
+// Dynamic id, typed in/out — works too: types are inferred from the closure.
+let cmd = DynCommand::new(runtime_id, |req: AddReq| async move {
+    Ok(req.a + req.b)
+})
+.description("Runtime adder")
+.schema(runtime_schema);
+registry.register_command(cmd).await?;
+```
+
+`DynCommand::new` takes an id + handler. `.description(..)` and `.schema(..)` are optional builder methods.
 
 ## CommandChannel trait
 
@@ -120,8 +159,10 @@ Implement the trait for custom transports (WebSocket, gRPC, stdio, etc.). The wi
 
 Re-exported from `coralstack-cmd-ipc-macros`. See [Defining Commands](/cmd-ipc/getting-started/rust/defining-commands/) for full usage.
 
-- `#[command("id", description = "...")]` — attribute on a free `async fn` or an `impl` method
-- `#[commands]` — attribute on an `impl` block; registers every `#[command]`-tagged method via `MyService.register_all(&registry).await?`
+- `#[command("id", description = "...")]` — attribute on a free `async fn` or an `impl` method. For a free fn named `greet`, also emits a `register_greet(&registry).await?` helper and a `GreetCommand` type usable with strict `execute::<GreetCommand>(..)`.
+- `#[command_service]` — attribute on an `impl Host` block. Generates:
+  - `Host.register(&registry).await?` — installs every tagged method.
+  - A nested `pub(super) mod host_snake_case_name` containing one wrapper type per method, reachable for strict execute: `registry.execute::<host_name::MethodName>(req).await?`.
 
 ## Errors
 

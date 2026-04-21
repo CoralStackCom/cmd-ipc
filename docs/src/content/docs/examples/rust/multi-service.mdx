@@ -5,7 +5,7 @@ description: Two registries, one process, cross-registry routing via InMemoryCha
 
 import { Aside, Steps } from '@astrojs/starlight/components';
 
-A single-process Rust example showing the `#[commands]` macro, cross-registry routing, and event fan-out — the Rust equivalent of the TypeScript [Web Workers example](/cmd-ipc/examples/typescript/web-workers/), minus the worker boundary.
+A single-process Rust example showing the `#[command_service]` macro, cross-registry routing, and event fan-out — the Rust equivalent of the TypeScript [Web Workers example](/cmd-ipc/examples/typescript/web-workers/), minus the worker boundary.
 
 Source: `rust/examples/multi-service/`.
 
@@ -36,7 +36,7 @@ cd rust && cargo run -p multi-service
 
 <Steps>
 
-1. **Macro-based command registration** — `MathService` and `GreetService` each use `#[commands]` on an `impl` block, with `#[command("id", description = "...")]` per method. One call to `Service.register_all(&registry).await?` registers everything.
+1. **Macro-based command registration** — `MathService` and `GreetService` each use `#[command_service]` on an `impl` block, with `#[command("id", description = "...")]` per method. One call to `Service.register(&registry).await?` registers everything.
 
 2. **`InMemoryChannel::pair`** — both halves of the transport created in one line, no OS sockets or worker threads.
 
@@ -60,7 +60,7 @@ pub struct BinaryOpReq { pub a: i64, pub b: i64 }
 
 pub struct MathService;
 
-#[commands]
+#[command_service]
 impl MathService {
     #[command("math.add", description = "Add two integers")]
     async fn add(&self, req: BinaryOpReq) -> Result<i64, CommandError> {
@@ -100,8 +100,8 @@ let driver_worker = worker.register_channel(ch_for_worker).await?;
 pool.spawn(driver_root)?;
 pool.spawn(driver_worker)?;
 
-GreetService.register_all(&root).await?;
-MathService.register_all(&worker).await?;
+GreetService.register(&root).await?;
+MathService.register(&worker).await?;
 ```
 
 ## Sample session

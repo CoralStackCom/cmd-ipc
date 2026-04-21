@@ -5,9 +5,10 @@
 //! separate schema map, no manual `Command` trait impl.
 //!
 //! - [`macro@command`] — mark one async fn/method as a command.
-//! - [`macro@commands`] — mark an `impl` block; every method inside
-//!   tagged with `#[command("id")]` becomes a registered command and the
-//!   block gains a generated `register_all(self, &registry)` helper.
+//! - [`macro@command_service`] — mark an `impl` block; every method
+//!   inside tagged with `#[command("id")]` becomes a registered command
+//!   and the block gains a generated `register(self, &registry)`
+//!   helper that installs every command in one call.
 //!
 //! See the `coralstack-cmd-ipc` crate docs for usage examples and
 //! end-to-end integration tests.
@@ -18,13 +19,13 @@ mod commands_attr;
 
 use proc_macro::TokenStream;
 
-/// Attach to an `async fn` (free-standing or inside an `#[commands] impl`
-/// block) to register it as a typed command.
+/// Attach to an `async fn` (free-standing or inside a
+/// `#[command_service] impl` block) to register it as a typed command.
 ///
-/// Usage inside an `#[commands] impl Service` block:
+/// Usage inside a `#[command_service] impl Service` block:
 ///
 /// ```ignore
-/// #[commands]
+/// #[command_service]
 /// impl Service {
 ///     #[command("math.add", description = "Add two numbers")]
 ///     async fn add(&self, req: AddReq) -> Result<i64, CommandError> { ... }
@@ -36,7 +37,7 @@ use proc_macro::TokenStream;
 /// ```ignore
 /// #[command("greet")]
 /// async fn greet(name: String) -> Result<String, CommandError> { ... }
-/// // Exposes `greet_command()` returning a value implementing `Command`.
+/// // Exposes `register_greet(&registry).await?` to install the command.
 /// ```
 #[proc_macro_attribute]
 pub fn command(attr: TokenStream, item: TokenStream) -> TokenStream {
@@ -49,11 +50,11 @@ pub fn command(attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// Rewrites the block so every `#[command("id")]` method becomes a typed
 /// command wrapper struct implementing `Command`, and adds an inherent
-/// `register_all` async method to the host type that registers every
-/// such command on a `&CommandRegistry`.
+/// `register` async method to the host type that installs every such
+/// command on a `&CommandRegistry`.
 ///
 /// ```ignore
-/// #[commands]
+/// #[command_service]
 /// impl MathService {
 ///     #[command("math.add")]
 ///     async fn add(&self, req: AddReq) -> Result<i64, CommandError> { ... }
@@ -63,10 +64,10 @@ pub fn command(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// }
 ///
 /// // Registers both commands with one call:
-/// MathService.register_all(&registry).await?;
+/// MathService.register(&registry).await?;
 /// ```
 #[proc_macro_attribute]
-pub fn commands(attr: TokenStream, item: TokenStream) -> TokenStream {
+pub fn command_service(attr: TokenStream, item: TokenStream) -> TokenStream {
     commands_attr::expand(attr.into(), item.into())
         .unwrap_or_else(syn::Error::into_compile_error)
         .into()

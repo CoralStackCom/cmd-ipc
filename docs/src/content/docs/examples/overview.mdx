@@ -15,7 +15,7 @@ cmd-ipc ships example projects for both language implementations. Each example i
 | [Electron](/cmd-ipc/examples/typescript/electron/) | TypeScript | MessagePortChannel | Main ↔ renderer IPC with shared schemas |
 | [Cloudflare Workers](/cmd-ipc/examples/typescript/cloudflare-workers/) | TypeScript | HTTPChannel | Edge-deployed HTTP commands with remote schema generation |
 | [AI Agent MCP](/cmd-ipc/examples/typescript/mcp-agent/) | TypeScript | MCPClient/Server | Expose commands as AI agent tools |
-| [Multi-Service](/cmd-ipc/examples/rust/multi-service/) | Rust | InMemoryChannel | Cross-registry routing, `#[commands]` macro, event fan-out |
+| [Multi-Service](/cmd-ipc/examples/rust/multi-service/) | Rust | InMemoryChannel | Cross-registry routing, `#[command_service]` macro, event fan-out |
 
 ## TypeScript
 
@@ -50,7 +50,7 @@ cmd-ipc ships example projects for both language implementations. Each example i
 
 <CardGrid>
   <Card title="Multi-Service" icon="seti:rust">
-    Two registries (`root` and `worker`) wired through an in-memory channel with a REPL on the root. Demonstrates the `#[commands]` macro, cross-registry routing, and event fan-out.
+    Two registries (`root` and `worker`) wired through an in-memory channel with a REPL on the root. Demonstrates the `#[command_service]` macro, cross-registry routing, and event fan-out.
 
     [View Example →](/cmd-ipc/examples/rust/multi-service/)
 

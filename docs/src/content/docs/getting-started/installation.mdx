@@ -66,7 +66,7 @@ cmd-ipc ships as both a TypeScript package and a Rust crate. Both speak the same
     serde_json = "1"
     ```
 
-    The core crate re-exports the `#[command]` / `#[commands]` attribute macros from `coralstack-cmd-ipc-macros`, so you don't need to depend on the macros crate directly.
+    The core crate re-exports the `#[command]` / `#[command_service]` attribute macros from `coralstack-cmd-ipc-macros`, so you don't need to depend on the macros crate directly.
 
     <Aside>
       <a href="https://docs.rs/schemars" target="_blank" rel="noopener">schemars</a> generates JSON Schema from your Rust request types — the same schema the TypeScript implementation advertises via Valibot. This keeps the wire protocol byte-identical across languages.
@@ -124,7 +124,7 @@ cmd-ipc ships as both a TypeScript package and a Rust crate. Both speak the same
     use coralstack_cmd_ipc::prelude::*;
     ```
 
-    This brings into scope: `command`, `commands`, `ChannelError`, `Command`, `CommandChannel`, `CommandDef`, `CommandError`, `CommandRegistry`, `CommandSchema`, `Config`, `InMemoryChannel`.
+    This brings into scope: `command`, `command_service`, `ChannelError`, `Command`, `CommandChannel`, `CommandDef`, `CommandError`, `CommandRegistry`, `CommandSchema`, `Config`, `DynCommand`, `InMemoryChannel`.
 
     ### Shorter import path (optional)
 

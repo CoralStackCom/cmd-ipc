@@ -5,7 +5,7 @@
 //!   struct implementing `Command`, an `<name>_command()` factory, and
 //!   keeps the original fn intact so callers may still invoke it
 //!   directly.
-//! - `expand_method(attr, method, host)` — called by the `#[commands]`
+//! - `expand_method(attr, method, host)` — called by the `#[command_service]`
 //!   macro for each tagged method inside an `impl Host` block. Produces
 //!   a generated struct holding an `Arc<Host>` whose `handle` delegates
 //!   to `host.<method>(req).await`.
@@ -57,9 +57,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
     Ok(quote! {
         #func
 
-        #[doc(hidden)]
-        #[allow(non_camel_case_types)]
-        struct #struct_ident;
+        #vis struct #struct_ident;
 
         #command_impl
 
@@ -69,15 +67,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
         #vis async fn #register_ident(
             registry: &#cmd_ipc::CommandRegistry,
         ) -> ::core::result::Result<(), #cmd_ipc::CommandError> {
-            let def = #cmd_ipc::CommandDef {
-                id: <#struct_ident as #cmd_ipc::Command>::ID.to_string(),
-                description: <#struct_ident as #cmd_ipc::Command>::DESCRIPTION
-                    .map(::std::string::ToString::to_string),
-                schema: <#struct_ident as #cmd_ipc::Command>::schema(),
-            };
-            registry
-                .register_command(def, #cmd_ipc::__handler_for_command(#struct_ident))
-                .await
+            registry.register_command(#struct_ident).await
         }
     })
 }
@@ -91,7 +81,7 @@ pub struct MethodExpansion {
     pub struct_ident: Ident,
 }
 
-/// Entry point invoked by `#[commands]` for one tagged method.
+/// Entry point invoked by `#[command_service]` for one tagged method.
 ///
 /// `host_ty` is the self-type of the surrounding impl block (the token
 /// stream naming the host type, including any generics in the future).
@@ -135,10 +125,14 @@ pub fn expand_method(
     );
 
     let items = quote! {
-        #[doc(hidden)]
-        #[allow(non_camel_case_types)]
-        struct #struct_ident {
-            host: ::std::sync::Arc<#host_ty>,
+        // `pub(super)` on the struct so its visibility matches whatever
+        // the user's request/response types are in the parent scope —
+        // private types stay private without a "leak" error, and `pub`
+        // types can be re-exported by the parent module via `pub use`.
+        // The `host` field is `pub(super)` for the same reason (the
+        // generated `register` in the parent needs to construct it).
+        pub(super) struct #struct_ident {
+            pub(super) host: ::std::sync::Arc<#host_ty>,
         }
 
         #command_impl
@@ -177,7 +171,7 @@ fn emit_command_impl(
                 #call_expr
             }
 
-            fn schema() -> ::core::option::Option<#cmd_ipc::CommandSchema> {
+            fn schema(&self) -> ::core::option::Option<#cmd_ipc::CommandSchema> {
                 ::core::option::Option::Some(#cmd_ipc::CommandSchema {
                     request: ::core::option::Option::Some(
                         #cmd_ipc::normalize_schema(
@@ -246,14 +240,17 @@ fn free_fn_struct_ident(fn_name: &Ident) -> Ident {
     Ident::new(&format!("{capitalized}Command"), fn_name.span())
 }
 
-fn method_struct_ident(host: &Ident, method: &Ident) -> Ident {
+fn method_struct_ident(_host: &Ident, method: &Ident) -> Ident {
+    // Capitalize the method name: `add` → `Add`. The struct lives inside
+    // the per-service nested module emitted by `#[command_service]`, so
+    // the fully-qualified path is e.g. `math_service::Add`.
     let s = method.to_string();
     let mut c = s.chars();
     let capitalized = match c.next() {
         Some(first) => first.to_uppercase().chain(c).collect::<String>(),
         None => s,
     };
-    Ident::new(&format!("__{}{}Command", host, capitalized), method.span())
+    Ident::new(&capitalized, method.span())
 }
 
 /// Extracts the request type from a signature.
@@ -330,7 +327,7 @@ fn expect_method_receiver(sig: &Signature) -> syn::Result<()> {
         Some(FnArg::Receiver(_)) => Ok(()),
         _ => Err(syn::Error::new_spanned(
             sig,
-            "#[command] inside an #[commands] impl must be a method (first arg `&self`)",
+            "#[command] inside an #[command_service] impl must be a method (first arg `&self`)",
         )),
     }
 }

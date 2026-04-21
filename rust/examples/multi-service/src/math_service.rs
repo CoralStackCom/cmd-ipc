@@ -1,4 +1,4 @@
-//! `MathService` — a command service wired up with the `#[commands]`
+//! `MathService` — a command service wired up with the `#[command_service]`
 //! macro. Registered on the worker registry; reached from the root
 //! registry over the in-memory channel.
 
@@ -14,7 +14,7 @@ pub struct BinaryOpReq {
 
 pub struct MathService;
 
-#[commands]
+#[command_service]
 impl MathService {
     #[command("math.add", description = "Add two integers")]
     async fn add(&self, req: BinaryOpReq) -> Result<i64, CommandError> {

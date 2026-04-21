@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use coralstack_cmd_ipc::{
-    ChannelError, CommandChannel, CommandDef, CommandRegistry, Config, ExecuteError, Message,
+    ChannelError, CommandChannel, CommandError, CommandRegistry, Config, DynCommand, Message,
 };
 use futures::channel::mpsc::{unbounded, UnboundedReceiver, UnboundedSender};
 use futures::channel::oneshot;
@@ -445,7 +445,7 @@ fn eval_expr(expr: &str, request: &Value) -> Value {
 
 fn make_local_handler(
     spec: &Value,
-) -> impl Fn(Value) -> BoxFuture<'static, Result<Value, ExecuteError>> + Send + Sync + 'static {
+) -> impl Fn(Value) -> BoxFuture<'static, Result<Value, CommandError>> + Send + Sync + 'static {
     let returns = spec.get("returns").cloned().unwrap_or(Value::Null);
     move |req: Value| {
         let returns = returns.clone();
@@ -499,13 +499,8 @@ fn run_behavior_vector(file: &Path, pool: &ThreadPool) -> Result<(), String> {
     if let Some(cmds) = registry_cfg.get("localCommands").and_then(Value::as_array) {
         for cmd in cmds {
             let id = cmd["id"].as_str().unwrap_or("").to_string();
-            let def = CommandDef {
-                id: id.clone(),
-                description: None,
-                schema: None,
-            };
             let handler = make_local_handler(cmd);
-            block_on(registry.register_command(def, handler))
+            block_on(registry.register_command(DynCommand::new(id.clone(), handler)))
                 .map_err(|e| format!("registering {id}: {e}"))?;
         }
     }
@@ -635,18 +630,13 @@ fn run_behavior_vector(file: &Path, pool: &ThreadPool) -> Result<(), String> {
                         .and_then(Value::as_str)
                         .unwrap_or("")
                         .to_string();
-                    let def = CommandDef {
-                        id: id.clone(),
-                        description: None,
-                        schema: None,
-                    };
                     let (tx, rx) = oneshot::channel::<Result<Value, LocalCallErr>>();
                     let registry_clone = registry.clone();
                     pool.spawn(async move {
                         let result = registry_clone
-                            .register_command(def, |_v: Value| async move {
-                                Ok::<Value, ExecuteError>(Value::Null)
-                            })
+                            .register_command(DynCommand::new(id, |_v: Value| async move {
+                                Ok::<Value, CommandError>(Value::Null)
+                            }))
                             .await;
                         let _ = tx.send(
                             result

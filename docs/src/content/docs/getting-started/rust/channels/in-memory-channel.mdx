@@ -13,7 +13,6 @@ import { Aside } from '@astrojs/starlight/components';
 
 ```rust
 use coralstack_cmd_ipc::prelude::*;
-use std::sync::Arc;
 
 let (ch_for_root, ch_for_worker) = InMemoryChannel::pair("worker", "root");
 
@@ -24,8 +23,8 @@ let worker = CommandRegistry::new(Config {
     ..Default::default()
 });
 
-let driver_root = root.register_channel(ch_for_root as Arc<dyn CommandChannel>).await?;
-let driver_worker = worker.register_channel(ch_for_worker as Arc<dyn CommandChannel>).await?;
+let driver_root = root.register_channel(ch_for_root).await?;
+let driver_worker = worker.register_channel(ch_for_worker).await?;
 
 // Spawn the driver futures on any executor (tokio, futures::executor::ThreadPool, etc.)
 pool.spawn(driver_root)?;
@@ -55,8 +54,8 @@ The future resolves when the channel closes.
 `router_channel` on the child registry's `Config` turns the pair into a Tree-Mesh — unknown commands escalate from `worker` up to `root`. Commands registered on one side become callable from the other.
 
 ```rust
-MathService.register_all(&worker).await?;
-GreetService.register_all(&root).await?;
+MathService.register(&worker).await?;
+GreetService.register(&root).await?;
 
 // Called on the root, but handled on the worker:
 let sum: i64 = root.execute::<MathAdd>(AddReq { a: 1, b: 2 }).await?;

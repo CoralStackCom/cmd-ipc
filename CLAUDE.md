@@ -90,7 +90,7 @@ The Rust port mirrors the TypeScript library's protocol and routing semantics wi
 
 1. **`CommandRegistry`** (`src/registry.rs`) — same routing model as TS: local / remote / router_channel escalation, private-prefix isolation, event fan-out with dedup, TTL-tracked in-flight requests. Public methods align with the TypeScript library:
    Public API (aligned 1:1 with the TypeScript reference, plus one Rust-only strict-mode method):
-   - `register_command(def: CommandDef, handler)` — single registration entry point. `handler` is any async closure `Fn(Value) -> Future<Output = Result<Value, ExecuteError>>`; the registry boxes it internally. Mirrors TS `registerCommand(command, handler)`.
+   - `register_command<C: Command>(cmd: C)` — the single registration entry point. Takes any `Command` trait instance: a typed `#[command]`-generated struct for compile-time commands, or a `DynCommand` built at runtime. Id, description, schema, and handler all flow off the instance. Mirrors TS `registerCommand(command, handler)` with a registry constructed using a `CommandSchemaMap`.
    - `register_channel(channel)` — attach a peer. **Commands owned by a channel are cleaned up automatically when the channel closes** (same as the TypeScript reference — no `unregister` method). For dynamic lifecycle-scoped command groups (e.g. Flow plugin sources), implement a custom `CommandChannel` that advertises its commands on connect; closing the channel drops them all.
    - `execute_command::<Req, Res>(id, req)` — **loose mode**; mirrors TS loose `executeCommand(id, args)`. For purely dynamic dispatch use `execute_command::<Value, Value>(id, payload)`.
    - `execute::<C: Command>(req)` — **strict mode**; mirrors TS `executeCommand<K>` with `CommandSchemaMap`. The compile-time `Command` trait pins both request and response types.
@@ -133,7 +133,7 @@ impl MathService {
     async fn ping(&self, _: ()) -> Result<String, CommandError> { Ok("pong".into()) }
 }
 
-MathService.register_all(&registry).await?;
+MathService.register(&registry).await?;
 
 // Free-fn shape (one-offs). The macro emits `register_<fn>(&registry)`
 // as the registration entry point.
@@ -154,7 +154,7 @@ use coralstack_cmd_ipc::prelude::*;
 use coralstack_cmd_ipc_mcp::McpServerChannel;
 
 let registry = CommandRegistry::new(Config::default());
-// ... register_command(def, handler) or MyService.register_all(&registry) as needed ...
+// ... registry.register_command(MyCmd).await? or MyService.register(&registry) as needed ...
 McpServerChannel::new(registry).serve_stdio().await?;
 ```
 

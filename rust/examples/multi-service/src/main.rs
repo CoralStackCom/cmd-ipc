@@ -1,5 +1,5 @@
 //! `multi-service` — a single-process Rust example demonstrating
-//! cross-registry command routing with the `#[commands]` macro.
+//! cross-registry command routing with the `#[command_service]` macro.
 //!
 //! Topology:
 //!
@@ -50,8 +50,6 @@ fn setup() -> (CommandRegistry, CommandRegistry, ThreadPool) {
     };
 
     let (ch_for_root, ch_for_worker) = InMemoryChannel::pair("worker", "root");
-    let ch_for_root: Arc<dyn CommandChannel> = ch_for_root;
-    let ch_for_worker: Arc<dyn CommandChannel> = ch_for_worker;
 
     let root = CommandRegistry::new(root_cfg);
     let worker = CommandRegistry::new(worker_cfg);
@@ -64,8 +62,8 @@ fn setup() -> (CommandRegistry, CommandRegistry, ThreadPool) {
         pool.spawn(driver_root).unwrap();
         pool.spawn(driver_worker).unwrap();
 
-        GreetService.register_all(&root).await.unwrap();
-        MathService.register_all(&worker).await.unwrap();
+        GreetService.register(&root).await.unwrap();
+        MathService.register(&worker).await.unwrap();
 
         futures_sleep(50).await;
     });

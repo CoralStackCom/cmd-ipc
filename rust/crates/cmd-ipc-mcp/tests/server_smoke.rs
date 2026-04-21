@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use coralstack_cmd_ipc::prelude::*;
-use coralstack_cmd_ipc::{Config, ExecuteError, ExecuteErrorCode};
+use coralstack_cmd_ipc::Config;
 use coralstack_cmd_ipc_mcp::McpServerChannel;
 use rmcp::model::{CallToolRequestParams, ClientInfo};
 use rmcp::{ClientHandler, ServiceExt};
@@ -25,15 +25,6 @@ impl ClientHandler for TestClient {
     }
 }
 
-fn sync_fn<F>(
-    f: F,
-) -> impl Fn(Value) -> futures::future::Ready<Result<Value, ExecuteError>> + Send + Sync + 'static
-where
-    F: Fn(Value) -> Result<Value, ExecuteError> + Send + Sync + 'static,
-{
-    move |req| futures::future::ready(f(req))
-}
-
 fn registry_with_two_commands() -> CommandRegistry {
     let reg = CommandRegistry::new(Config {
         id: Some("mcp-test".into()),
@@ -43,76 +34,54 @@ fn registry_with_two_commands() -> CommandRegistry {
 
     futures::executor::block_on(async {
         // math.add — takes {a,b}, returns a+b
-        let add_def = CommandDef {
-            id: "math.add".into(),
-            description: Some("Add two integers".into()),
-            schema: Some(CommandSchema {
-                request: Some(json!({
-                    "type": "object",
-                    "properties": {
-                        "a": { "type": "integer" },
-                        "b": { "type": "integer" }
-                    },
-                    "required": ["a", "b"]
-                })),
-                response: Some(json!({ "type": "integer" })),
-            }),
-        };
-        reg.register_command(
-            add_def,
-            sync_fn(|req| {
-                let a = req.get("a").and_then(Value::as_i64).unwrap_or(0);
-                let b = req.get("b").and_then(Value::as_i64).unwrap_or(0);
-                Ok(json!(a + b))
-            }),
-        )
-        .await
-        .unwrap();
+        let add = DynCommand::new("math.add", |req: Value| async move {
+            let a = req.get("a").and_then(Value::as_i64).unwrap_or(0);
+            let b = req.get("b").and_then(Value::as_i64).unwrap_or(0);
+            Ok(json!(a + b))
+        })
+        .description("Add two integers")
+        .schema(CommandSchema {
+            request: Some(json!({
+                "type": "object",
+                "properties": {
+                    "a": { "type": "integer" },
+                    "b": { "type": "integer" }
+                },
+                "required": ["a", "b"]
+            })),
+            response: Some(json!({ "type": "integer" })),
+        });
+        reg.register_command(add).await.unwrap();
 
         // greet.hello — scalar string in/out
-        let greet_def = CommandDef {
-            id: "greet.hello".into(),
-            description: Some("Greet someone by name".into()),
-            schema: Some(CommandSchema {
-                request: Some(json!({ "type": "string" })),
-                response: Some(json!({ "type": "string" })),
-            }),
-        };
-        reg.register_command(
-            greet_def,
-            sync_fn(|req| {
-                let name = req.as_str().unwrap_or("world");
-                Ok(Value::String(format!("hello, {name}")))
-            }),
-        )
-        .await
-        .unwrap();
+        let greet = DynCommand::new("greet.hello", |req: Value| async move {
+            let name = req.as_str().unwrap_or("world");
+            Ok(Value::String(format!("hello, {name}")))
+        })
+        .description("Greet someone by name")
+        .schema(CommandSchema {
+            request: Some(json!({ "type": "string" })),
+            response: Some(json!({ "type": "string" })),
+        });
+        reg.register_command(greet).await.unwrap();
 
         // Private — must NOT be exposed as an MCP tool.
-        reg.register_command(
-            CommandDef {
-                id: "_internal.ping".into(),
-                description: None,
-                schema: None,
-            },
-            sync_fn(|_| Ok(json!("pong"))),
-        )
+        reg.register_command(DynCommand::new(
+            "_internal.ping",
+            |_req: Value| async move { Ok(json!("pong")) },
+        ))
         .await
         .unwrap();
 
         // boom — always errors with internal_error + a custom message.
         reg.register_command(
-            CommandDef {
-                id: "boom".into(),
-                description: Some("Always fails".into()),
-                schema: None,
-            },
-            sync_fn(|_| {
-                Err(ExecuteError {
-                    code: ExecuteErrorCode::InternalError,
+            DynCommand::new("boom", |_req: Value| async move {
+                Err::<Value, _>(CommandError::Internal {
+                    command_id: "boom".into(),
                     message: "deliberate failure for tests".into(),
                 })
-            }),
+            })
+            .description("Always fails"),
         )
         .await
         .unwrap();

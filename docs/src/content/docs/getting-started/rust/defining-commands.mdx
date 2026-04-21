@@ -1,11 +1,11 @@
 ---
 title: Defining Commands
-description: Register commands in Rust with the #[command] / #[commands] macros
+description: Register commands in Rust with the #[command] / #[command_service] macros
 ---
 
 import { Aside } from '@astrojs/starlight/components';
 
-A command is an async function with an ID. The `#[command]` attribute macro binds a function (or impl method) to a command ID, and `#[commands]` on an `impl` block lets you register every tagged method at once via `MyService.register_all(&registry)`.
+A command is an async function with an ID. The `#[command]` attribute macro binds a function (or impl method) to a command ID, and `#[command_service]` on an `impl` block lets you register every tagged method at once via `MyService.register(&registry)`.
 
 ## The basic shape
 
@@ -19,7 +19,7 @@ struct AddReq { a: i64, b: i64 }
 
 struct MathService;
 
-#[commands]
+#[command_service]
 impl MathService {
     #[command("math.add", description = "Add two integers")]
     async fn add(&self, req: AddReq) -> Result<i64, CommandError> {
@@ -28,7 +28,11 @@ impl MathService {
 }
 
 let registry = CommandRegistry::new(Config::default());
-MathService.register_all(&registry).await?;
+MathService.register(&registry).await?;
+
+// Strict-mode dispatch: each tagged method is a type under a nested
+// module named after the host (snake_case). No service instance needed.
+let sum: i64 = registry.execute::<math_service::Add>(AddReq { a: 2, b: 3 }).await?;
 ```
 
 ## Request and response types are the schema
@@ -52,7 +56,7 @@ pub struct CalcRes { pub result: f64 }
 Commands whose ID starts with `_` are **private** — they stay local to the registering process and are never announced to connected channels or exposed as MCP tools.
 
 ```rust
-#[commands]
+#[command_service]
 impl LocalOps {
     #[command("_main.log")]
     async fn log(&self, msg: String) -> Result<(), CommandError> {

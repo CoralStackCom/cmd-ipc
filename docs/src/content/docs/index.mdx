@@ -81,7 +81,7 @@ Building applications that span multiple processes, workers, or services often m
 
     struct MathService;
 
-    #[commands]
+    #[command_service]
     impl MathService {
         #[command("math.add", description = "Add two integers")]
         async fn add(&self, req: AddReq) -> Result<i64, CommandError> {
@@ -90,7 +90,7 @@ Building applications that span multiple processes, workers, or services often m
     }
 
     let registry = CommandRegistry::new(Config::default());
-    MathService.register_all(&registry).await?;
+    MathService.register(&registry).await?;
 
     let result: i64 = registry
         .execute_command("math.add", AddReq { a: 5, b: 3 })

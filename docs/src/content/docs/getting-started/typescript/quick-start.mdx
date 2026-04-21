@@ -1,0 +1,209 @@
+---
+title: Quick Start
+description: Build your first cmd-ipc application in TypeScript
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+A calculator where math operations run in a **Web Worker** off the main thread. The main thread calls worker commands with full type safety, events broadcast results, and private commands stay local.
+
+## Step 1: Define Command Schemas
+
+First, define the schemas for your commands. These provide both TypeScript types and runtime validation. Use `defineIds` to create type-safe command ID constants:
+
+```typescript
+// src/ipc/command-schema.ts
+import * as v from 'valibot'
+import type { CommandSchemaMap, InferCommandSchemaMapType } from '@coralstack/cmd-ipc'
+import { defineIds } from '@coralstack/cmd-ipc'
+
+export const CalcCommandSchema = {
+  'calc.add': {
+    description: 'Adds two numbers together',
+    request: v.object({ a: v.number(), b: v.number() }),
+    response: v.object({ result: v.number() }),
+  },
+  'calc.multiply': {
+    description: 'Multiplies two numbers together',
+    request: v.object({ a: v.number(), b: v.number() }),
+    response: v.object({ result: v.number() }),
+  },
+  // Private command — underscore prefix means it won't be shared with other processes
+  '_main.log': {
+    description: 'Internal logging command (private to main process)',
+    request: v.object({
+      level: v.picklist(['debug', 'info', 'warn', 'error']),
+      message: v.string(),
+    }),
+  },
+} as const satisfies CommandSchemaMap
+
+export const CommandIDs = defineIds(CalcCommandSchema)
+
+type Commands = InferCommandSchemaMapType<typeof CalcCommandSchema>
+export type CommandRequest<K extends keyof Commands> = Commands[K]['request']
+export type CommandResponse<K extends keyof Commands> = Promise<Commands[K]['response']>
+```
+
+<Aside type="tip">
+  Use `as const satisfies CommandSchemaMap` to get the best of both worlds: literal types for inference and type checking against the schema interface.
+</Aside>
+
+## Step 2: Define Event Schemas
+
+Events are fire-and-forget broadcasts to all connected processes.
+
+```typescript
+// src/ipc/event-schema.ts
+import * as v from 'valibot'
+import type { EventSchemaMap } from '@coralstack/cmd-ipc'
+import { defineIds } from '@coralstack/cmd-ipc'
+
+export const CalcEventSchema = {
+  'worker.ready': v.object({
+    workerId: v.string(),
+    commandCount: v.number(),
+  }),
+  'computation.complete': v.object({
+    commandId: v.string(),
+    result: v.number(),
+    durationMs: v.number(),
+  }),
+} as const satisfies EventSchemaMap
+
+export const EventIDs = defineIds(CalcEventSchema)
+```
+
+## Step 3: Create Command Handlers
+
+Use the `@Command` decorator. The decorator only takes the command ID — descriptions live in the schema:
+
+```typescript
+// src/services/calc-service.ts
+import { Command } from '@coralstack/cmd-ipc'
+import type { CommandRequest, CommandResponse } from '../ipc/command-schema'
+import { CommandIDs } from '../ipc/command-schema'
+
+export class CalcService {
+  @Command(CommandIDs.CALC_ADD)
+  async add({ a, b }: CommandRequest<typeof CommandIDs.CALC_ADD>): CommandResponse<typeof CommandIDs.CALC_ADD> {
+    return { result: a + b }
+  }
+
+  @Command(CommandIDs.CALC_MULTIPLY)
+  async multiply({ a, b }: CommandRequest<typeof CommandIDs.CALC_MULTIPLY>): CommandResponse<typeof CommandIDs.CALC_MULTIPLY> {
+    return { result: a * b }
+  }
+}
+```
+
+## Step 4: Set Up the Worker
+
+Create a Web Worker that registers the command handlers. The worker waits for the main thread to send a MessagePort via `postMessage`:
+
+```typescript
+// src/workers/calc.worker.ts
+import 'reflect-metadata'
+import { CommandRegistry, MessagePortChannel, registerCommands } from '@coralstack/cmd-ipc'
+import { CalcCommandSchema, CommandIDs } from '../ipc/command-schema'
+import { CalcEventSchema, EventIDs } from '../ipc/event-schema'
+import { CalcService } from '../services/calc-service'
+
+const registry = new CommandRegistry({
+  id: 'calc-worker',
+  schemas: { commands: CalcCommandSchema, events: CalcEventSchema },
+})
+
+registerCommands([new CalcService()], registry)
+
+self.onmessage = (event: MessageEvent) => {
+  if (event.data.type === 'init' && event.ports[0]) {
+    const port = event.ports[0]
+    const channel = new MessagePortChannel('main', port)
+    registry.registerChannel(channel)
+    channel.start()
+
+    registry.emitEvent(EventIDs.WORKER_READY, {
+      workerId: 'calc-worker',
+      commandCount: 2,
+    })
+  }
+}
+```
+
+## Step 5: Connect from Main Thread
+
+Create a `MessageChannel` and pass one port to the worker, keeping the other for the main thread's registry:
+
+```typescript
+// src/main.ts
+import 'reflect-metadata'
+import { CommandRegistry, MessagePortChannel } from '@coralstack/cmd-ipc'
+import { CalcCommandSchema, CommandIDs } from './ipc/command-schema'
+import { CalcEventSchema, EventIDs } from './ipc/event-schema'
+
+async function main() {
+  const worker = new Worker(
+    new URL('./workers/calc.worker.ts', import.meta.url),
+    { type: 'module' }
+  )
+
+  const channel = new MessageChannel()
+
+  const registry = new CommandRegistry({
+    id: 'main',
+    schemas: { commands: CalcCommandSchema, events: CalcEventSchema },
+  })
+
+  registry.registerCommand(CommandIDs._MAIN_LOG, async ({ level, message }) => {
+    console[level](`[Main] ${message}`)
+  })
+
+  registry.onEvent(EventIDs.WORKER_READY, ({ workerId, commandCount }) => {
+    console.log(`Worker ${workerId} ready with ${commandCount} commands`)
+  })
+
+  const workerChannel = new MessagePortChannel('calc-worker', channel.port1)
+  await registry.registerChannel(workerChannel)
+
+  worker.postMessage({ type: 'init' }, [channel.port2])
+
+  await new Promise<void>((resolve) => {
+    registry.onEvent(EventIDs.WORKER_READY, () => resolve())
+  })
+
+  const sum = await registry.executeCommand(CommandIDs.CALC_ADD, { a: 5, b: 3 })
+  console.log('5 + 3 =', sum.result) // 8
+
+  const product = await registry.executeCommand(CommandIDs.CALC_MULTIPLY, { a: 4, b: 7 })
+  console.log('4 × 7 =', product.result) // 28
+
+  await registry.executeCommand(CommandIDs._MAIN_LOG, {
+    level: 'info',
+    message: 'Calculations complete!',
+  })
+}
+
+main()
+```
+
+<Aside>
+  Private commands (prefixed with `_`) are never shared with connected channels. They're useful for internal operations that should stay within a single process.
+</Aside>
+
+## How It Works
+
+<Steps>
+1. **Schema Definition**: Valibot schemas define the contract for each command and event.
+2. **Handler Registration**: `@Command` decorators bind methods to command IDs; `registerCommands([...], registry)` installs them.
+3. **Channel Setup**: `MessageChannel` + `MessagePortChannel` provides the pipe between the main thread and the worker.
+4. **Event Broadcasting**: Events propagate to all connected registries.
+5. **Command Execution**: `executeCommand` routes to the right handler automatically.
+</Steps>
+
+## Key Points
+
+- **Schemas define the contract** — the wire format is byte-identical across TypeScript and Rust.
+- **Handlers are registered** where the code should run (worker).
+- **Private commands** (prefixed with `_`) stay local to the current process.
+- **Events** broadcast to all connected processes without expecting a response.
