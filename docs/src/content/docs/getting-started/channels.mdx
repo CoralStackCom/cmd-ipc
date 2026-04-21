@@ -1,0 +1,48 @@
+---
+title: Channels
+description: What channels are in cmd-ipc and how they connect registries
+---
+
+import { Aside, LinkCard, CardGrid } from '@astrojs/starlight/components';
+
+Channels are the **transport layer** in cmd-ipc. They abstract the underlying communication mechanism so the same command API works over Web Workers, HTTP, MCP, in-memory pipes, or anything you implement yourself.
+
+## What is a channel?
+
+A channel is a bidirectional communication pipe that:
+
+- Has a unique ID used by the registry as a routing key
+- Sends and receives messages (the protocol's seven `Message` variants — see [Protocol](/cmd-ipc/introduction/protocol/))
+- Signals connection close so the registry can clean up
+- Can operate in client or server mode, depending on the channel type
+
+Each language implementation defines its own **channel interface** (`ICommandChannel` in TypeScript, `CommandChannel` trait in Rust) and ships a set of built-in channel implementations. The wire format is byte-identical across languages, so a TypeScript peer and a Rust peer can exchange messages over any transport both support.
+
+## Channel lifecycle
+
+1. You construct a channel and pass it to `registry.registerChannel(channel)` (TS) or `registry.register_channel(channel)` (Rust).
+2. The registry calls the channel's `start()` to perform any handshake.
+3. For client-mode channels, the registry probes the peer for its commands and caches them as "remote" for routing.
+4. The registry pumps messages in both directions — your handlers run locally, remote calls route over the channel.
+5. When the channel closes (peer disconnect, explicit `close()`, transport error), the registry drops any commands owned by that channel and stops routing to it.
+
+<Aside type="tip">
+  Custom channels follow the same interface. Build a WebSocket channel, a gRPC channel, an AMQP channel, or whatever your application needs — the registry doesn't care about the transport, only about the `Message`s flowing through it.
+</Aside>
+
+## Language-specific interfaces and built-in channels
+
+The channel interface shape and the available built-ins differ between the two implementations. Pick your language:
+
+<CardGrid>
+  <LinkCard
+    title="TypeScript channels"
+    description="ICommandChannel interface; MessagePortChannel, HTTPChannel, and MCPChannel built-ins."
+    href="/cmd-ipc/getting-started/typescript/channels/"
+  />
+  <LinkCard
+    title="Rust channels"
+    description="CommandChannel trait; InMemoryChannel and MCPChannel built-ins."
+    href="/cmd-ipc/getting-started/rust/channels/"
+  />
+</CardGrid>

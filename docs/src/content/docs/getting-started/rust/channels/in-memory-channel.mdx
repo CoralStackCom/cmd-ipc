@@ -5,10 +5,6 @@ description: Same-process registry-to-registry transport (Rust)
 
 import { Aside } from '@astrojs/starlight/components';
 
-<Aside type="note">
-  `InMemoryChannel` is Rust-only. The TypeScript package uses `MessagePortChannel` with `MessageChannel()` for the equivalent in-process use case.
-</Aside>
-
 `InMemoryChannel` is an in-process bidirectional transport for wiring two `CommandRegistry` instances together without touching the OS. It's the Rust equivalent of pairing two `MessagePort`s inside a single Node.js process — ideal for tests, examples, and single-binary apps that still want registry isolation (e.g. plugin hosts, actor-style decomposition).
 
 ## Pair two registries

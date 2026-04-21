@@ -1,0 +1,77 @@
+---
+title: Defining Commands
+description: Register commands in Rust with the #[command] / #[commands] macros
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+A command is an async function with an ID. The `#[command]` attribute macro binds a function (or impl method) to a command ID, and `#[commands]` on an `impl` block lets you register every tagged method at once via `MyService.register_all(&registry)`.
+
+## The basic shape
+
+```rust
+use coralstack_cmd_ipc::prelude::*;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
+#[derive(Deserialize, Serialize, JsonSchema)]
+struct AddReq { a: i64, b: i64 }
+
+struct MathService;
+
+#[commands]
+impl MathService {
+    #[command("math.add", description = "Add two integers")]
+    async fn add(&self, req: AddReq) -> Result<i64, CommandError> {
+        Ok(req.a + req.b)
+    }
+}
+
+let registry = CommandRegistry::new(Config::default());
+MathService.register_all(&registry).await?;
+```
+
+## Request and response types are the schema
+
+Rust doesn't have a separate schema map. Any type used in a handler needs `Serialize`, `Deserialize`, and `JsonSchema` derives — the registry generates the wire-level JSON Schema from those derives automatically, byte-compatible with what the TypeScript side emits via Valibot.
+
+```rust
+#[derive(Deserialize, Serialize, JsonSchema)]
+pub struct CalcReq { pub a: f64, pub b: f64 }
+
+#[derive(Deserialize, Serialize, JsonSchema)]
+pub struct CalcRes { pub result: f64 }
+```
+
+<Aside type="note">
+  There's no `defineIds`-equivalent. Command IDs are plain string literals passed to the `#[command]` attribute.
+</Aside>
+
+## Private commands
+
+Commands whose ID starts with `_` are **private** — they stay local to the registering process and are never announced to connected channels or exposed as MCP tools.
+
+```rust
+#[commands]
+impl LocalOps {
+    #[command("_main.log")]
+    async fn log(&self, msg: String) -> Result<(), CommandError> {
+        eprintln!("{msg}");
+        Ok(())
+    }
+}
+```
+
+## Free-function shape
+
+For one-offs that don't warrant a service struct, attach `#[command]` directly to an `async fn`. The macro emits a `register_<fn_name>(&registry)` entry point:
+
+```rust
+#[command("greet")]
+async fn greet(name: String) -> Result<String, CommandError> {
+    Ok(format!("hello, {name}"))
+}
+
+register_greet(&registry).await?;
+```
+

@@ -1,0 +1,64 @@
+---
+title: Channels Overview
+description: The CommandChannel trait and built-in channels for Rust
+---
+
+import { CardGrid, LinkCard, Aside } from '@astrojs/starlight/components';
+
+This page covers Rust-specific channel details. For the general concept of what a channel is, see [Channels](/cmd-ipc/getting-started/channels/).
+
+## Built-in channels
+
+<CardGrid>
+  <LinkCard
+    title="InMemoryChannel"
+    description="Same-process registry-to-registry transport via Arc-shared message queues."
+    href="/cmd-ipc/getting-started/rust/channels/in-memory-channel/"
+  />
+  <LinkCard
+    title="MCPChannel"
+    description="Expose a registry's public commands as MCP tools for AI agents."
+    href="/cmd-ipc/getting-started/rust/channels/mcp-channel/"
+  />
+</CardGrid>
+
+<Aside type="note">
+  HTTP and MessagePort transports are not yet shipped on the Rust side. For HTTP-reachable registries today, consume a TypeScript HTTP server from Rust by implementing a thin `CommandChannel` around the wire protocol (it's byte-identical to the TS one).
+</Aside>
+
+## The `CommandChannel` trait
+
+All channels implement the `CommandChannel` trait:
+
+```rust
+pub trait CommandChannel: Send + Sync {
+    fn id(&self) -> &str;
+    fn start(&self) -> BoxFuture<'_, Result<(), ChannelError>>;
+    fn close(&self) -> BoxFuture<'_, ()>;
+    fn send(&self, msg: Message) -> Result<(), ChannelError>;
+    fn recv(&self) -> BoxFuture<'_, Option<Message>>;
+}
+```
+
+| Method | Description |
+|---|---|
+| `id()` | Unique identifier for this channel |
+| `start()` | Handshake/setup, called once before first recv |
+| `close()` | Tear down; subsequent send returns `Err(Closed)`, recv returns `None` |
+| `send(msg)` | Fire-and-forget send to the peer |
+| `recv()` | Await the next inbound message, or `None` on close |
+
+The async methods return `BoxFuture` so `dyn CommandChannel` stays object-safe (same shape `#[async_trait]` would produce).
+
+## Registering channels
+
+```rust
+use std::sync::Arc;
+use coralstack_cmd_ipc::prelude::*;
+
+let channel: Arc<dyn CommandChannel> = /* ... */;
+let driver = registry.register_channel(channel).await?;
+tokio::spawn(driver);  // or any executor
+```
+
+`register_channel` returns a `Future<Output = ()>` — spawn it yourself on tokio, async-std, smol, or `futures::executor::ThreadPool`. The future resolves when the channel closes, and commands owned by the channel are cleaned up automatically at that point.

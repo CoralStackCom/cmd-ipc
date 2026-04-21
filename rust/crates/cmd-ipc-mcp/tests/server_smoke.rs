@@ -1,9 +1,10 @@
 //! End-to-end smoke tests for `McpServerChannel`.
 //!
 //! Uses `tokio::io::duplex` to wire a local rmcp client to an in-process
-//! `McpServerChannel` backed by a [`CommandRegistry`]. No real stdio or
-//! network involved.
+//! `McpServerChannel` registered on a [`CommandRegistry`]. No real stdio
+//! or network involved.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use coralstack_cmd_ipc::prelude::*;
@@ -120,8 +121,9 @@ fn registry_with_two_commands() -> CommandRegistry {
     reg
 }
 
-/// Spawns an `McpServerChannel` on one end of an in-memory duplex stream
-/// and returns the connected rmcp client.
+/// Registers an `McpServerChannel` on `registry` and wires its rmcp
+/// handler to one end of an in-memory duplex stream. Returns the
+/// connected rmcp client plus a join handle for the server task.
 async fn connect_client(
     registry: CommandRegistry,
 ) -> (
@@ -130,9 +132,16 @@ async fn connect_client(
 ) {
     let (server_transport, client_transport) = tokio::io::duplex(4096);
 
+    let mcp = Arc::new(McpServerChannel::new("mcp"));
+    let driver = registry
+        .register_channel(mcp.clone())
+        .await
+        .expect("register mcp channel");
+    tokio::spawn(driver);
+
     let server_handle = tokio::spawn(async move {
-        let mcp = McpServerChannel::new(registry);
         let svc = mcp
+            .into_handler()
             .serve(server_transport)
             .await
             .expect("server initialize should succeed");

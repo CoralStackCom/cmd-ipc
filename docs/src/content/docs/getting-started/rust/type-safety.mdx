@@ -1,0 +1,100 @@
+---
+title: Type Safety
+description: Compile-time and runtime type checking in the Rust implementation
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+The Rust implementation is **strict by default** — the request and response types on the `Command` trait *are* the schema. There is no "loose mode" equivalent to the TypeScript version; for dynamic dispatch you opt into `serde_json::Value` explicitly.
+
+## Strict mode: `execute::<C>()`
+
+Every command has a compile-time identity via the `Command` trait. The `#[command]` / `#[commands]` macros generate this impl automatically, but it looks like this under the hood:
+
+```rust
+use coralstack_cmd_ipc::prelude::*;
+
+struct MathAdd;
+
+impl Command for MathAdd {
+    const ID: &'static str = "math.add";
+    type Request = AddReq;   // Deserialize + JsonSchema
+    type Response = i64;     // Serialize
+}
+
+// Strict call — request and response types checked at compile time.
+// Equivalent to TypeScript's executeCommand<K>.
+let sum: i64 = registry.execute::<MathAdd>(AddReq { a: 1, b: 2 }).await?;
+```
+
+The compiler rejects mismatches at the call site: wrong request type, wrong response type, or an unknown command all fail to build.
+
+## Loose mode: `execute_command::<Req, Res>()`
+
+For runtime-known command IDs (scripting runtimes, FFI, generic tooling), use the generic form and pass types via turbofish. Reach for `serde_json::Value` on both sides for fully dynamic dispatch:
+
+```rust
+use serde_json::Value;
+
+let payload: Value = serde_json::json!({ "a": 1, "b": 2 });
+let result: Value = registry
+    .execute_command::<Value, Value>("math.add", payload)
+    .await?;
+```
+
+You can also pin one side and leave the other generic — e.g. known request type but dynamic response:
+
+```rust
+let v: Value = registry.execute_command::<AddReq, Value>("math.add", req).await?;
+```
+
+<Aside type="tip">
+  Prefer `execute::<C>()` wherever the command is known at compile time. Fall back to `execute_command::<Req, Res>()` only when you genuinely need dynamic dispatch.
+</Aside>
+
+## Schemas on the wire
+
+The registry advertises a JSON Schema for every command via the protocol's `CommandDef.schema` field. That schema comes from `schemars::schema_for!(C::Request)` and is **byte-compatible** with the schema the TypeScript side produces from Valibot — so a Rust registry connected to a Node.js peer sees identical `register.command.request` / `list.commands.response` messages.
+
+This is what makes the cross-language routing claim concrete: the schemas aren't just similar, they serialize to the same JSON.
+
+## Request/response type constraints
+
+The `Command` trait imposes minimal constraints:
+
+| Type | Bound | Reason |
+|---|---|---|
+| `C::Request` | `Deserialize + JsonSchema` | Deserialized from the wire; its schema is advertised to peers |
+| `C::Response` | `Serialize` | Serialized to the wire |
+
+Both types also need `Send + 'static` if they cross await points in the handler (i.e., pretty much always). In practice, derive the four standard traits:
+
+```rust
+#[derive(Serialize, Deserialize, JsonSchema, Clone)]
+struct AddReq { a: i64, b: i64 }
+```
+
+## Error types
+
+Command handlers return `Result<C::Response, CommandError>`. `CommandError` serializes to the protocol's `ExecuteError { code, message }` shape; the `ExecuteErrorCode` enum covers `NotFound`, `InvalidRequest`, `InternalError`, `Timeout`, `ChannelDisconnected`. Return variants directly from handlers — the macro wiring takes care of the conversion.
+
+```rust
+#[command("math.div")]
+async fn div(&self, req: DivReq) -> Result<f64, CommandError> {
+    if req.b == 0.0 {
+        return Err(CommandError::InvalidRequest {
+            command_id: "math.div".into(),
+            message: "division by zero".into(),
+        });
+    }
+    Ok(req.a / req.b)
+}
+```
+
+## Best practices
+
+1. **Prefer `execute::<C>()`** — compile-time identity beats runtime strings every time.
+2. **Derive `schemars::JsonSchema` on every request/response type** — otherwise the registry can't advertise a schema and cross-language peers fall back to permissive validation.
+3. **Keep request types owned** (`String`, not `&str`) — handlers run across await points.
+4. **Use the prelude** — `use coralstack_cmd_ipc::prelude::*;` pulls in the common traits and macros in one line.
+

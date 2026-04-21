@@ -1,14 +1,11 @@
 //! MCP server adapter that exposes a [`CommandRegistry`](coralstack_cmd_ipc::CommandRegistry)
 //! as Model Context Protocol tools.
 //!
-//! Plug this into a registry when you want a local MCP agent (Claude
-//! Desktop, Cursor, etc.) to see every command the registry advertises
-//! as a callable tool. Every non-private command is exposed; private
-//! commands (id prefixed with `_`) are never surfaced.
-//!
-//! Example (stdio transport, the usual way local agents spawn servers):
+//! [`McpServerChannel`] implements [`CommandChannel`](coralstack_cmd_ipc::CommandChannel),
+//! so it plugs into a registry the same way any other channel does:
 //!
 //! ```no_run
+//! use std::sync::Arc;
 //! use coralstack_cmd_ipc::prelude::*;
 //! use coralstack_cmd_ipc_mcp::McpServerChannel;
 //!
@@ -16,18 +13,24 @@
 //! let registry = CommandRegistry::new(Config::default());
 //! // ... registry.register_command(...) etc ...
 //!
-//! let mcp = McpServerChannel::new(registry);
+//! // Register the MCP channel like any other channel.
+//! let mcp = Arc::new(McpServerChannel::new("mcp"));
+//! let driver = registry.register_channel(mcp.clone()).await?;
+//! tokio::spawn(driver);
+//!
+//! // Drive the MCP protocol over stdio. Completes when the MCP client
+//! // disconnects; the channel remains registered until explicitly closed.
 //! mcp.serve_stdio().await?;
 //! # Ok(()) }
 //! ```
 //!
-//! The adapter holds a clone of the registry (cheap — the registry is
-//! internally `Arc`). `tools/list` reads [`CommandRegistry::list_commands`]
-//! at call time, so commands registered or unregistered after the server
-//! starts show up in the next list request. `tools/call` forwards to
-//! [`CommandRegistry::execute_command`] — the call goes through the
-//! registry's full routing machinery (local, remote via channel, or
-//! escalation to a router), just like any other caller.
+//! Every non-private command in the registry is exposed to the MCP
+//! client as a tool; private commands (id prefixed with `_`) are never
+//! surfaced. `tools/list` and `tools/call` from the MCP client generate
+//! `list.commands.request` / `execute.command.request` messages on the
+//! cmd-ipc wire, so the registry's full routing machinery (local,
+//! remote via channel, escalation to a router) applies just as for any
+//! other caller.
 
 mod server;
 mod translate;

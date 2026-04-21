@@ -61,7 +61,7 @@ This guide walks you through building a simple application with commands running
     </Aside>
   </TabItem>
   <TabItem label="Rust" icon="seti:rust">
-    In Rust, the **request/response types are the schema**. `schemars` derives a JSON Schema equivalent to the Valibot one, and the `#[command]` macro wires it into the registry.
+    Rust doesn't have a separate schema map like the TypeScript version. Any type you use in a command handler just needs to derive `Serialize`, `Deserialize`, and `JsonSchema` — the registry generates the wire-level schema from those derives automatically.
 
     ```rust
     // src/ipc.rs
@@ -73,15 +73,9 @@ This guide walks you through building a simple application with commands running
 
     #[derive(Deserialize, Serialize, JsonSchema)]
     pub struct CalcRes { pub result: f64 }
-
-    #[derive(Deserialize, Serialize, JsonSchema)]
-    pub struct LogReq {
-        pub level: String,  // "debug" | "info" | "warn" | "error"
-        pub message: String,
-    }
     ```
 
-    Command IDs are plain string literals passed to `#[command]` — no separate `defineIds` step.
+    With these types defined, you can now use them in the command handler in [Step 3](#step-3-create-command-handlers).
   </TabItem>
 </Tabs>
 

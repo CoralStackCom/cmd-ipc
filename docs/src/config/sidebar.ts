@@ -33,25 +33,60 @@ export const sidebar: SidebarSection[] = [
     items: [
       { label: 'Installation', slug: 'getting-started/installation' },
       { label: 'Quick Start', slug: 'getting-started/quick-start' },
-      { label: 'Defining Commands', slug: 'getting-started/defining-commands' },
-      { label: 'Type Safety', slug: 'getting-started/type-safety' },
+      { label: 'Channels', slug: 'getting-started/channels' },
       {
-        label: 'Channels',
+        label: 'TypeScript',
         items: [
-          { label: 'Overview', slug: 'getting-started/channels' },
           {
-            label: 'MessagePortChannel',
-            slug: 'getting-started/channels/message-port-channel',
+            label: 'Defining Commands',
+            slug: 'getting-started/typescript/defining-commands',
           },
-          { label: 'HTTPChannel', slug: 'getting-started/channels/http-channel' },
+          { label: 'Type Safety', slug: 'getting-started/typescript/type-safety' },
           {
-            label: 'InMemoryChannel',
-            slug: 'getting-started/channels/in-memory-channel',
+            label: 'Channels',
+            items: [
+              { label: 'Overview', slug: 'getting-started/typescript/channels' },
+              {
+                label: 'MessagePortChannel',
+                slug: 'getting-started/typescript/channels/message-port-channel',
+              },
+              {
+                label: 'HTTPChannel',
+                slug: 'getting-started/typescript/channels/http-channel',
+              },
+              {
+                label: 'MCPChannel',
+                slug: 'getting-started/typescript/channels/mcp-channel',
+              },
+            ],
           },
-          { label: 'MCPChannel', slug: 'getting-started/channels/mcp-channel' },
+          { label: 'CLI', slug: 'getting-started/typescript/cli' },
         ],
       },
-      { label: 'CLI', slug: 'getting-started/cli' },
+      {
+        label: 'Rust',
+        items: [
+          {
+            label: 'Defining Commands',
+            slug: 'getting-started/rust/defining-commands',
+          },
+          { label: 'Type Safety', slug: 'getting-started/rust/type-safety' },
+          {
+            label: 'Channels',
+            items: [
+              { label: 'Overview', slug: 'getting-started/rust/channels' },
+              {
+                label: 'InMemoryChannel',
+                slug: 'getting-started/rust/channels/in-memory-channel',
+              },
+              {
+                label: 'MCPChannel',
+                slug: 'getting-started/rust/channels/mcp-channel',
+              },
+            ],
+          },
+        ],
+      },
     ],
   },
   {

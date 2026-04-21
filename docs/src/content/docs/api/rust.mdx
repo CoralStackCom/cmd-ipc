@@ -1,5 +1,5 @@
 ---
-title: Rust API Reference
+title: API Reference
 description: API reference for coralstack-cmd-ipc (Rust)
 ---
 
@@ -96,7 +96,7 @@ Then execute in strict mode:
 let result: i64 = registry.execute::<Add>(AddReq { a: 2, b: 3 }).await?;
 ```
 
-The `#[command]` / `#[commands]` macros generate the `Command` impl automatically — see [Defining Commands](/cmd-ipc/getting-started/defining-commands/).
+The `#[command]` / `#[commands]` macros generate the `Command` impl automatically — see [Defining Commands](/cmd-ipc/getting-started/rust/defining-commands/).
 
 ## CommandChannel trait
 
@@ -112,13 +112,13 @@ pub trait CommandChannel: Send + Sync {
 
 Built-in implementation:
 
-- **`InMemoryChannel`** — `InMemoryChannel::pair(local_id, peer_id)` returns two `Arc<InMemoryChannel>` halves wired together. Ideal for same-process tests and single-process multi-registry setups. See [InMemoryChannel](/cmd-ipc/getting-started/channels/in-memory-channel/).
+- **`InMemoryChannel`** — `InMemoryChannel::pair(local_id, peer_id)` returns two `Arc<InMemoryChannel>` halves wired together. Ideal for same-process tests and single-process multi-registry setups. See [InMemoryChannel](/cmd-ipc/getting-started/rust/channels/in-memory-channel/).
 
 Implement the trait for custom transports (WebSocket, gRPC, stdio, etc.). The wire `Message` type is byte-identical to the TypeScript union — see [Protocol](/cmd-ipc/introduction/protocol/).
 
 ## Macros
 
-Re-exported from `coralstack-cmd-ipc-macros`. See [Defining Commands](/cmd-ipc/getting-started/defining-commands/) for full usage.
+Re-exported from `coralstack-cmd-ipc-macros`. See [Defining Commands](/cmd-ipc/getting-started/rust/defining-commands/) for full usage.
 
 - `#[command("id", description = "...")]` — attribute on a free `async fn` or an `impl` method
 - `#[commands]` — attribute on an `impl` block; registers every `#[command]`-tagged method via `MyService.register_all(&registry).await?`
@@ -134,12 +134,31 @@ Re-exported from `coralstack-cmd-ipc-macros`. See [Defining Commands](/cmd-ipc/g
 
 ## MCP adapter
 
-`coralstack-cmd-ipc-mcp::McpServerChannel` exposes a registry's public commands as MCP tools via the `rmcp` SDK.
+`coralstack-cmd-ipc-mcp::McpServerChannel` implements `CommandChannel`, so it registers on the registry like any other channel. It wraps an `rmcp` server handler internally.
 
 ```rust
+use std::sync::Arc;
 use coralstack_cmd_ipc_mcp::McpServerChannel;
 
-McpServerChannel::new(registry).serve_stdio().await?;
+let mcp = Arc::new(McpServerChannel::new("mcp"));
+let driver = registry.register_channel(mcp.clone()).await?;
+tokio::spawn(driver);
+
+mcp.serve_stdio().await?;
 ```
+
+Pure translation between MCP and cmd-ipc wire messages — no registry reference held. MCP `tools/list` / `tools/call` emit `ListCommandsRequest` / `ExecuteCommandRequest` through `recv()`; the registry's `ExecuteCommandResponse` comes back via `send()` and is correlated to the waiting MCP call by `thid`.
+
+| Method | Purpose |
+|---|---|
+| `new(id)` | Create the channel with a given id |
+| `with_implementation(name, version)` | Override the `serverInfo` reported to MCP clients |
+| `with_instructions(s)` | Attach an `instructions` string for MCP clients |
+| `with_timeout(Duration)` | Timeout for MCP-originated requests awaiting the registry |
+| `serve(transport)` | Drive the MCP protocol over any rmcp transport (stdio, TCP, duplex, WebSocket, …) |
+| `serve_stdio()` | Convenience wrapper: `serve(rmcp::transport::io::stdio())` |
+| `into_handler()` | Returns an rmcp `ServerHandler` — use this to plug into HTTP frameworks (axum, actix, warp, …) as a per-session handler factory |
+
+Stdio ships in the crate by default. For HTTP or any other transport, enable the relevant rmcp feature in your own `Cargo.toml` and pass the transport to `serve()` (or use `into_handler()` for HTTP's per-session model).
 
 Private commands (prefixed with `_`) are never exposed as tools.
