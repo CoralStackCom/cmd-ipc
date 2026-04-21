@@ -2,10 +2,9 @@
 //! `#[command]` macro into language-agnostic JSON Schema suitable for
 //! MCP tool schemas and remote `GET /cmd.json`-style consumers.
 //!
-//! The Rust `schemars` crate (0.8) emits several Rust/OpenAPI-flavored
-//! fields that are NOT part of the JSON Schema standard and that
-//! generic consumers — including the TypeScript implementation — do
-//! not expect:
+//! The Rust `schemars` crate emits several Rust/OpenAPI-flavored fields
+//! that are NOT part of the JSON Schema standard and that generic
+//! consumers — including the TypeScript implementation — do not expect:
 //!
 //! - `$schema` — the draft URL. Informational only; dropped.
 //! - `title` — defaults to the Rust type name (e.g. `"BinaryOpReq"`,
