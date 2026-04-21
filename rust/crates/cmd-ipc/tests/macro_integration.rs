@@ -143,6 +143,57 @@ fn strict_execute_via_nested_module_path() {
     });
 }
 
+// ---------- typed events (via #[event] macro) ----------
+
+/// Worker has finished initializing.
+#[event("worker.ready")]
+#[derive(Deserialize, Serialize, JsonSchema)]
+struct WorkerReady {
+    worker_id: String,
+    command_count: u32,
+}
+
+#[test]
+fn typed_event_emit_and_on_round_trips_across_channel() {
+    let (reg_a, reg_b, _pool) = wire_pair("root", "worker", None, Some("root"));
+
+    // Subscribe on the root with the typed API. The callback receives
+    // a deserialized `WorkerReady`.
+    let hits = Arc::new(std::sync::Mutex::new(Vec::<WorkerReady>::new()));
+    let h = hits.clone();
+    let _unsub = reg_a.on::<WorkerReady>(move |event| {
+        h.lock().unwrap().push(event);
+    });
+
+    // Emit from the worker — event crosses the channel to the root.
+    reg_b
+        .emit(WorkerReady {
+            worker_id: "w1".into(),
+            command_count: 7,
+        })
+        .unwrap();
+
+    // Poll for delivery.
+    block_on(async {
+        for _ in 0..50 {
+            if !hits.lock().unwrap().is_empty() {
+                break;
+            }
+            let (tx, rx) = futures::channel::oneshot::channel();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                let _ = tx.send(());
+            });
+            let _ = rx.await;
+        }
+    });
+
+    let seen = hits.lock().unwrap();
+    assert_eq!(seen.len(), 1);
+    assert_eq!(seen[0].worker_id, "w1");
+    assert_eq!(seen[0].command_count, 7);
+}
+
 #[test]
 fn free_fn_macro_registers_via_factory() {
     let (reg_a, _reg_b, _pool) = wire_pair("root", "worker", None, Some("root"));

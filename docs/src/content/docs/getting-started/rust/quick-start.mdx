@@ -162,26 +162,75 @@ root.execute_command::<_, serde_json::Value>(
 ).await?;
 ```
 
-Events work the same way — emit on either side, listen on either side:
+Strict mode (`execute::<calc_service::Add>(..)`) and loose mode (`execute_command("calc.add", ..)`) cover both ends of the typing spectrum. See [Type Safety](/cmd-ipc/getting-started/rust/type-safety/) for the tradeoffs and when to reach for each.
+
+## Step 5: Emit and Listen for Events
+
+Events are fire-and-forget broadcasts — no response, no routing escalation, just a payload that fans out to every connected registry (unless the id is private). Define a payload struct with `#[event("id")]` and the struct itself becomes the typed event.
 
 ```rust
-root.add_event_listener("worker.ready", |payload| {
-    println!("Worker ready: {payload}");
-});
+// src/calc_service.rs (or wherever your shared types live)
+use coralstack_cmd_ipc::prelude::*;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 
-worker.emit_event("worker.ready", serde_json::json!({
-    "worker_id": "calc-worker",
-    "command_count": 2,
-}))?;
+/// Worker finished initializing.
+#[event("worker.ready")]
+#[derive(Deserialize, Serialize, JsonSchema)]
+pub struct WorkerReady {
+    pub worker_id: String,
+    pub command_count: u32,
+}
 ```
 
-Strict mode (`execute::<calc_service::Add>(..)`) and loose mode (`execute_command("calc.add", ..)`) cover both ends of the typing spectrum. See [Type Safety](/cmd-ipc/getting-started/rust/type-safety/) for the tradeoffs and when to reach for each.
+### Listen
+
+`on::<E>(cb)` subscribes by the compile-time `E::ID` and delivers the payload already deserialized into `E` — no casting, no JSON juggling:
+
+```rust
+let _unsub = root.on::<WorkerReady>(|event| {
+    println!("{} ready with {} commands", event.worker_id, event.command_count);
+});
+```
+
+The return value is an `impl FnOnce()` that unsubscribes when called. Drop it (or call it) to remove just this listener; ignore it to leave the listener installed for the lifetime of the registry.
+
+### Emit
+
+The payload struct *is* the event — no separate marker type, no `emit_event(id, payload)` tuple. Just construct and emit:
+
+```rust
+worker.emit(WorkerReady {
+    worker_id: "calc-worker".into(),
+    command_count: 2,
+})?;
+```
+
+`emit` fans out to every connected channel (with dedup on the message id to prevent echo loops in meshes) and also dispatches to local listeners on the same registry.
+
+<Aside type="tip">
+  Event IDs starting with `_` are **private**: they fire to local in-process listeners but are never broadcast across channels.
+</Aside>
+
+### Dynamic events
+
+For event ids that only exist at runtime (plugin runtimes, FFI, scripting hosts), use `DynEvent` on the emit side and `on_dyn` on the listen side — same machinery, runtime ids + raw JSON payloads:
+
+```rust
+registry.emit(DynEvent::new(runtime_id, serde_json::json!({ "ok": true })))?;
+
+let _unsub = registry.on_dyn(runtime_id, |payload: serde_json::Value| {
+    println!("got event: {payload}");
+});
+```
+
+`DynEvent::new(id, payload)` takes the id + payload; `.schema(..)` is an optional builder method for MCP/tooling consumers.
 
 ## Key Points
 
 - **Commands are typed functions** — `#[command_service]` + `#[command]` binds methods to IDs; `Serialize` / `Deserialize` / `JsonSchema` derives drive the wire schema.
+- **Events are typed payloads** — `#[event]` on a payload struct turns it into a first-class event type usable with `emit` / `on`.
 - **Registries own the command table** — one per process or logical service, wired by channels.
 - **Channels are pluggable** — `InMemoryChannel` for in-process tests, implement the `CommandChannel` trait for any transport.
-- **Private commands** (prefixed with `_`) stay local to the registering process.
-- **Events** broadcast to all connected registries with no response expected.
+- **Private ids** (prefixed with `_`) stay local — for both commands and events.
 - **Runtime is your choice** — this guide uses tokio, but any `Future` executor works.

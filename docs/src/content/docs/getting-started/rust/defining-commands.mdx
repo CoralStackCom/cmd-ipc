@@ -79,3 +79,45 @@ async fn greet(name: String) -> Result<String, CommandError> {
 register_greet(&registry).await?;
 ```
 
+## Defining events
+
+Events are fire-and-forget broadcasts — same registry, same channels, no response. Attach `#[event("id")]` to a payload struct that derives `Serialize` / `Deserialize` / `JsonSchema`; the struct *is* the event type.
+
+```rust
+use coralstack_cmd_ipc::prelude::*;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
+/// Worker has finished initializing.
+#[event("worker.ready")]
+#[derive(Deserialize, Serialize, JsonSchema)]
+pub struct WorkerReady {
+    pub worker_id: String,
+    pub command_count: u32,
+}
+
+// Emit — fully typed.
+registry.emit(WorkerReady {
+    worker_id: "w1".into(),
+    command_count: 2,
+})?;
+
+// Listen — callback receives a deserialized `WorkerReady`.
+let _unsub = registry.on::<WorkerReady>(|event| {
+    println!("{} ready", event.worker_id);
+});
+```
+
+Private events (id starts with `_`) stay local: they fire to in-process listeners but are never broadcast across channels.
+
+For runtime-known event ids (plugin runtimes, FFI, scripting hosts), use `DynEvent` with `emit` and `on_dyn`:
+
+```rust
+use serde_json::json;
+
+registry.emit(DynEvent::new(runtime_id, json!({ "ok": true })))?;
+let _unsub = registry.on_dyn(runtime_id, |payload| {
+    println!("got event: {payload}");
+});
+```
+

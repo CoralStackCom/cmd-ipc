@@ -34,6 +34,7 @@ use uuid::Uuid;
 use crate::channel::CommandChannel;
 use crate::command::Command;
 use crate::error::{ChannelError, CommandError, ExecuteErrorCode, RegisterErrorCode};
+use crate::event::Event;
 use crate::message::{
     CommandDef, ExecuteError, ExecuteResult, False, Message, MessageId, RegisterResult, True,
 };
@@ -472,15 +473,21 @@ impl CommandRegistry {
         }
     }
 
-    /// Emits an event to local listeners and (unless the event id is
-    /// private, i.e. starts with `_`) broadcasts to every connected
-    /// channel.
-    pub fn emit_event<P: Serialize>(&self, event_id: &str, payload: P) -> Result<(), CommandError> {
-        let payload_value = serde_json::to_value(payload)?;
+    /// Emit an event. Dispatches to local listeners and — unless the
+    /// event id is private (starts with `_`) — broadcasts to every
+    /// connected channel.
+    ///
+    /// Works for both compile-time events (`#[event]`-annotated
+    /// structs) and runtime events ([`DynEvent`](crate::command::Command)
+    /// — actually [`DynEvent`](crate::event::DynEvent)). Id, description,
+    /// and schema are all read off the event instance.
+    pub fn emit<E: Event>(&self, event: E) -> Result<(), CommandError> {
+        let event_id = event.id().to_string();
+        let payload_value = serde_json::to_value(&event)?;
         let msg_id = MessageId::new_v4();
         self.inner.seen_events.insert(msg_id, ());
 
-        self.dispatch_event_locally(event_id, &payload_value);
+        self.dispatch_event_locally(&event_id, &payload_value);
 
         if !event_id.starts_with('_') {
             let channels: Vec<Arc<dyn CommandChannel>> = self
@@ -494,7 +501,7 @@ impl CommandRegistry {
             for ch in channels {
                 let _ = ch.send(Message::Event {
                     id: msg_id,
-                    event_id: event_id.to_string(),
+                    event_id: event_id.clone(),
                     payload: Some(payload_value.clone()),
                 });
             }
@@ -502,16 +509,48 @@ impl CommandRegistry {
         Ok(())
     }
 
-    /// Subscribes a listener that fires whenever an event with the
-    /// given id is emitted or received.
+    /// Subscribe a typed listener. The callback receives a
+    /// deserialized `E` every time an event with id `E::ID` fires,
+    /// whether emitted locally or received from a connected channel.
     ///
-    /// Mirrors the TypeScript library's `addEventListener`. Returns an
-    /// unsubscribe closure — call it (and drop it) to remove just this
-    /// listener. Ignoring the return value is fine; the listener then
-    /// lives for the life of the registry.
+    /// Returns an unsubscribe closure — call it (and drop it) to
+    /// remove just this listener. Ignoring the return value is fine;
+    /// the listener then lives for the life of the registry.
     ///
-    /// Listeners for the same event fire in insertion order.
-    pub fn add_event_listener<F>(
+    /// Listeners for the same event fire in insertion order. Payloads
+    /// that fail to deserialize into `E` are silently dropped for
+    /// this listener — they still flow to any typed-for-Value
+    /// listeners registered via [`on_dyn`](Self::on_dyn).
+    pub fn on<E: Event + serde::de::DeserializeOwned>(
+        &self,
+        listener: impl Fn(E) + Send + Sync + 'static,
+    ) -> impl FnOnce() + Send + Sync + 'static {
+        self.install_listener(E::ID, move |value| {
+            if let Ok(typed) = serde_json::from_value::<E>(value) {
+                listener(typed);
+            }
+        })
+    }
+
+    /// Subscribe a dynamic listener by runtime id. The callback
+    /// receives the raw JSON payload. Use this when the event id is
+    /// only known at runtime (plugin runtimes, FFI, scripting hosts);
+    /// prefer [`on`](Self::on) whenever you have a compile-time
+    /// [`Event`] type.
+    ///
+    /// Same unsubscribe semantics as [`on`](Self::on).
+    pub fn on_dyn<F>(
+        &self,
+        event_id: impl Into<String>,
+        listener: F,
+    ) -> impl FnOnce() + Send + Sync + 'static
+    where
+        F: Fn(Value) + Send + Sync + 'static,
+    {
+        self.install_listener(&event_id.into(), listener)
+    }
+
+    fn install_listener<F>(
         &self,
         event_id: &str,
         listener: F,

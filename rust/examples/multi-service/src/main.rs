@@ -233,7 +233,7 @@ fn do_emit(root: &CommandRegistry, worker: &CommandRegistry, rest: &str) -> Resu
     let got_clone = Arc::clone(&got);
     // Returned closure would remove this listener; ignore it since we
     // want the listener to live until the process exits.
-    let _unsub = worker.add_event_listener(event_id, move |payload| {
+    let _unsub = worker.on_dyn(event_id, move |payload| {
         *got_clone.lock().unwrap() = Some(payload);
     });
 
@@ -242,7 +242,7 @@ fn do_emit(root: &CommandRegistry, worker: &CommandRegistry, rest: &str) -> Resu
         format!("emit {} payload={}", event_id, ui::pretty(&payload_value),),
     );
 
-    root.emit_event(event_id, payload_value)
+    root.emit(DynEvent::new(event_id, payload_value))
         .map_err(|e| format!("emit failed: {e}"))?;
 
     block_on(futures_sleep(30));

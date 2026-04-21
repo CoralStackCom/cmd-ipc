@@ -5,9 +5,11 @@ description: Compile-time and runtime type checking in the Rust implementation
 
 import { Aside } from '@astrojs/starlight/components';
 
-The Rust implementation is **strict by default** — the request and response types on the `Command` trait *are* the schema. There is no "loose mode" equivalent to the TypeScript version; for dynamic dispatch you opt into `serde_json::Value` explicitly.
+The Rust implementation is **strict by default** — both command request/response types and event payload types *are* the schema. There is no "loose mode" equivalent to the TypeScript version; for dynamic dispatch you opt into `serde_json::Value` explicitly.
 
-## Strict mode: `execute::<C>()`
+## Commands
+
+### Strict mode: `execute::<C>()`
 
 Every command has a compile-time identity via the `Command` trait. The `#[command]` / `#[command_service]` macros generate this impl automatically, but it looks like this under the hood:
 
@@ -58,7 +60,7 @@ let diff: i64 = registry.execute::<math_service::Sub>(SubReq { a: 10, b: 4 }).aw
 
 No service instance required — `math_service::Add` is just a type path. The generated structs inherit `pub(super)` visibility, so private request/response types in the parent module stay private without forcing `pub`; users who want to reach the command types from another module can `pub use self::math_service::*;` to re-export.
 
-## Loose mode: `execute_command::<Req, Res>()`
+### Loose mode: `execute_command::<Req, Res>()`
 
 For runtime-known command IDs (scripting runtimes, FFI, generic tooling), use the generic form and pass types via turbofish. Reach for `serde_json::Value` on both sides for fully dynamic dispatch:
 
@@ -81,7 +83,7 @@ let v: Value = registry.execute_command::<AddReq, Value>("math.add", req).await?
   Prefer `execute::<C>()` wherever the command is known at compile time. Fall back to `execute_command::<Req, Res>()` only when you genuinely need dynamic dispatch.
 </Aside>
 
-## Runtime-constructed commands: `DynCommand`
+### Runtime-constructed commands: `DynCommand`
 
 When the id, description, or schema only exists at runtime (plugin runtimes, FFI, scripting hosts), `DynCommand` lets you build a `Command` instance with owned values instead of compile-time constants. It still goes through the same `register_command` entry point — typed and runtime commands share one API.
 
@@ -105,13 +107,7 @@ registry.register_command(cmd).await?;
 
 `execute::<C>()` isn't meaningful for a `DynCommand` (there's no compile-time id to pin), so dispatch dynamically-registered commands via `execute_command::<Req, Res>()`.
 
-## Schemas on the wire
-
-The registry advertises a JSON Schema for every command via the protocol's `CommandDef.schema` field. That schema comes from `schemars::schema_for!(C::Request)` and is **byte-compatible** with the schema the TypeScript side produces from Valibot — so a Rust registry connected to a Node.js peer sees identical `register.command.request` / `list.commands.response` messages.
-
-This is what makes the cross-language routing claim concrete: the schemas aren't just similar, they serialize to the same JSON.
-
-## Request/response type constraints
+### Request / response type constraints
 
 The `Command` trait imposes minimal constraints:
 
@@ -127,7 +123,7 @@ Both types also need `Send + 'static` if they cross await points in the handler 
 struct AddReq { a: i64, b: i64 }
 ```
 
-## Error types
+### Error types
 
 Command handlers return `Result<C::Response, CommandError>`. `CommandError` serializes to the protocol's `ExecuteError { code, message }` shape; the `ExecuteErrorCode` enum covers `NotFound`, `InvalidRequest`, `InternalError`, `Timeout`, `ChannelDisconnected`. Return variants directly from handlers — the macro wiring takes care of the conversion.
 
@@ -144,10 +140,106 @@ async fn div(&self, req: DivReq) -> Result<f64, CommandError> {
 }
 ```
 
+## Events
+
+Events follow the same "type *is* the schema" pattern as commands, but simpler — no handler, no routing escalation, no request/response split. The payload struct *is* the event type.
+
+### Strict mode: `emit(event)` / `on::<E>(cb)`
+
+Every event has a compile-time identity via the `Event` trait. The `#[event]` macro generates the impl automatically, but under the hood it looks like:
+
+```rust
+use coralstack_cmd_ipc::prelude::*;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
+#[derive(Deserialize, Serialize, JsonSchema)]
+pub struct WorkerReady {
+    pub worker_id: String,
+    pub command_count: u32,
+}
+
+impl Event for WorkerReady {
+    const ID: &'static str = "worker.ready";
+    // optional: fn schema(&self) -> Option<Value> { ... }
+}
+```
+
+With the `#[event]` macro, that collapses to:
+
+```rust
+/// Worker has finished initializing.
+#[event("worker.ready")]
+#[derive(Deserialize, Serialize, JsonSchema)]
+pub struct WorkerReady {
+    pub worker_id: String,
+    pub command_count: u32,
+}
+```
+
+Emit and listen are both strict — compile-time checked, no JSON juggling at the call sites:
+
+```rust
+// Emit — the payload struct *is* the event.
+registry.emit(WorkerReady {
+    worker_id: "w1".into(),
+    command_count: 2,
+})?;
+
+// Listen — callback receives a deserialized `WorkerReady`.
+let _unsub = registry.on::<WorkerReady>(|event| {
+    println!("{} ready with {}", event.worker_id, event.command_count);
+});
+```
+
+The compiler rejects mismatches: wrong payload type on emit, wrong event type in the callback, all fail to build.
+
+### Dynamic mode: `DynEvent` / `on_dyn`
+
+For event ids that only exist at runtime (plugin runtimes, FFI, scripting hosts), use `DynEvent` on the emit side and `on_dyn` on the listen side. Same `emit` entry point — `DynEvent` implements `Event` with a runtime-owned id and a `Value` payload.
+
+```rust
+use serde_json::{json, Value};
+
+registry.emit(DynEvent::new(runtime_id, json!({ "ok": true })))?;
+
+let _unsub = registry.on_dyn(runtime_id, |payload: Value| {
+    println!("got event: {payload}");
+});
+```
+
+`on::<E>()` isn't meaningful for a `DynEvent` (there's no compile-time id to pin), so dispatch dynamically-registered events via `on_dyn(id, cb)`.
+
+### Payload type constraints
+
+The `Event` trait imposes minimal constraints:
+
+| Type | Bound | Reason |
+|---|---|---|
+| Event struct | `Serialize + Send + Sync + 'static` | Serialized to the wire on `emit` |
+| Event struct (for `on::<E>`) | Additionally `DeserializeOwned` | Deserialized before delivery to the callback |
+
+In practice: derive the four standard traits, matching commands:
+
+```rust
+#[event("worker.ready")]
+#[derive(Serialize, Deserialize, JsonSchema, Clone)]
+pub struct WorkerReady { ... }
+```
+
+### Private events
+
+Event IDs starting with `_` are **private**: they fire to local in-process listeners but are never broadcast across channels. Same rule as for private commands.
+
+## Schemas on the wire
+
+The registry advertises a JSON Schema for every command via the protocol's `CommandDef.schema` field, and for every `#[event]`-annotated type via `Event::schema()`. Both come from `schemars::schema_for!(T)` and are **byte-compatible** with the schemas the TypeScript side produces from Valibot — so a Rust registry connected to a Node.js peer sees identical `register.command.request` / `list.commands.response` / `event` messages.
+
+This is what makes the cross-language routing claim concrete: the schemas aren't just similar, they serialize to the same JSON.
+
 ## Best practices
 
-1. **Prefer `execute::<C>()`** — compile-time identity beats runtime strings every time.
-2. **Derive `schemars::JsonSchema` on every request/response type** — otherwise the registry can't advertise a schema and cross-language peers fall back to permissive validation.
-3. **Keep request types owned** (`String`, not `&str`) — handlers run across await points.
-4. **Use the prelude** — `use coralstack_cmd_ipc::prelude::*;` pulls in the common traits and macros in one line.
-
+1. **Prefer the typed entry points** — `execute::<C>()` for commands, `emit(event)` + `on::<E>(cb)` for events. Compile-time identity beats runtime strings every time.
+2. **Derive `schemars::JsonSchema` on every request/response/payload type** — otherwise the registry can't advertise a schema and cross-language peers fall back to permissive validation.
+3. **Keep types owned** (`String`, not `&str`) — handlers and event callbacks run across await points / channel boundaries.
+4. **Use the prelude** — `use coralstack_cmd_ipc::prelude::*;` pulls in `Command`, `Event`, `DynCommand`, `DynEvent`, the macros, and the common traits in one line.

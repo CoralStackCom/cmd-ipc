@@ -17,6 +17,7 @@
 pub mod channel;
 pub mod command;
 pub mod error;
+pub mod event;
 pub mod message;
 pub mod registry;
 pub mod schema;
@@ -25,6 +26,7 @@ pub mod ttl_map;
 pub use channel::{CommandChannel, InMemoryChannel};
 pub use command::{Command, DynCommand};
 pub use error::{ChannelError, CommandError, ExecuteErrorCode, RegisterErrorCode};
+pub use event::{DynEvent, Event};
 pub use message::{
     CommandDef, CommandSchema, ExecuteError, ExecuteResult, False, Message, MessageId,
     RegisterResult, True,
@@ -38,7 +40,7 @@ pub use ttl_map::TtlMap;
 // macros. Users should not reference these directly; they're here so
 // generated code can name stable paths even if the user's crate doesn't
 // list these deps individually.
-pub use coralstack_cmd_ipc_macros::{command, command_service};
+pub use coralstack_cmd_ipc_macros::{command, command_service, event};
 pub use schemars;
 pub use serde_json;
 
@@ -49,7 +51,8 @@ pub use serde_json;
 /// ```
 pub mod prelude {
     pub use crate::{
-        command, command_service, ChannelError, Command, CommandChannel, CommandDef, CommandError,
-        CommandRegistry, CommandSchema, Config, DynCommand, InMemoryChannel,
+        command, command_service, event, ChannelError, Command, CommandChannel, CommandDef,
+        CommandError, CommandRegistry, CommandSchema, Config, DynCommand, DynEvent, Event,
+        InMemoryChannel,
     };
 }

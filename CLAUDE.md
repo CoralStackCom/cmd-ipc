@@ -94,8 +94,9 @@ The Rust port mirrors the TypeScript library's protocol and routing semantics wi
    - `register_channel(channel)` — attach a peer. **Commands owned by a channel are cleaned up automatically when the channel closes** (same as the TypeScript reference — no `unregister` method). For dynamic lifecycle-scoped command groups (e.g. Flow plugin sources), implement a custom `CommandChannel` that advertises its commands on connect; closing the channel drops them all.
    - `execute_command::<Req, Res>(id, req)` — **loose mode**; mirrors TS loose `executeCommand(id, args)`. For purely dynamic dispatch use `execute_command::<Value, Value>(id, payload)`.
    - `execute::<C: Command>(req)` — **strict mode**; mirrors TS `executeCommand<K>` with `CommandSchemaMap`. The compile-time `Command` trait pins both request and response types.
-   - `emit_event(event, payload)`.
-   - `add_event_listener(event, cb)` — returns an `impl FnOnce()` unsubscribe closure (mirrors TS's `() => void`). Ignore the return value to leave the listener installed for the lifetime of the registry.
+   - `emit<E: Event>(event)` — single entry point for both typed `#[event]` structs and runtime `DynEvent` instances. Mirrors TS `emitEvent`.
+   - `on<E: Event + DeserializeOwned>(cb)` — typed event listener; the callback receives a deserialized `E`. Mirrors TS strict `addEventListener`.
+   - `on_dyn(id, cb)` — dynamic event listener by runtime id; the callback receives raw `Value`. Used for FFI/scripting hosts. Both variants return `impl FnOnce()` unsubscribe closures.
    - `list_commands()` → `Vec<CommandDef>` (mirrors TS `listCommands()`).
    - `list_channels()` → connected channel ids (mirrors TS `listChannels()`).
    - `dispose()` — closes all channels, drops commands, clears listeners. Mirrors TS `dispose()`.

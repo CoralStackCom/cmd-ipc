@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use coralstack_cmd_ipc::{
-    Command, CommandChannel, CommandError, CommandRegistry, Config, InMemoryChannel,
+    Command, CommandChannel, CommandError, CommandRegistry, Config, DynEvent, InMemoryChannel,
 };
 use futures::executor::{block_on, ThreadPool};
 use futures::task::SpawnExt;
@@ -256,12 +256,12 @@ fn events_broadcast_and_dedup() {
 
     let hits = Arc::new(Mutex::new(Vec::<String>::new()));
     let h = hits.clone();
-    let _unsub = reg_b.add_event_listener("user.created", move |payload| {
+    let _unsub = reg_b.on_dyn("user.created", move |payload| {
         h.lock().unwrap().push(payload.to_string());
     });
 
     reg_a
-        .emit_event("user.created", json!({ "id": "u1" }))
+        .emit(DynEvent::new("user.created", json!({ "id": "u1" })))
         .unwrap();
 
     wait_for(|| !hits.lock().unwrap().is_empty());
@@ -277,11 +277,11 @@ fn private_event_does_not_cross_channel() {
 
     let hits = Arc::new(Mutex::new(0u32));
     let h = hits.clone();
-    let _unsub = reg_b.add_event_listener("_tick", move |_| {
+    let _unsub = reg_b.on_dyn("_tick", move |_| {
         *h.lock().unwrap() += 1;
     });
 
-    reg_a.emit_event("_tick", json!({})).unwrap();
+    reg_a.emit(DynEvent::new("_tick", json!({}))).unwrap();
 
     // Give the system time to (not) deliver.
     block_on(sleep_ms(60));

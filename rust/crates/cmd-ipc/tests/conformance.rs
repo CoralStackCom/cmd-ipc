@@ -13,7 +13,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use coralstack_cmd_ipc::{
-    ChannelError, CommandChannel, CommandError, CommandRegistry, Config, DynCommand, Message,
+    ChannelError, CommandChannel, CommandError, CommandRegistry, Config, DynCommand, DynEvent,
+    Message,
 };
 use futures::channel::mpsc::{unbounded, UnboundedReceiver, UnboundedSender};
 use futures::channel::oneshot;
@@ -521,7 +522,7 @@ fn run_behavior_vector(file: &Path, pool: &ThreadPool) -> Result<(), String> {
             let trace_cb = trace.clone();
             // Keep the listener live for the lifetime of the test — we
             // deliberately ignore the unsubscribe closure.
-            let _keep = registry.add_event_listener(&eid, move |payload| {
+            let _keep = registry.on_dyn(&eid, move |payload| {
                 let mut t = trace_cb.lock().unwrap();
                 t.invocations += 1;
                 t.last_payload = Some(payload);
@@ -621,8 +622,8 @@ fn run_behavior_vector(file: &Path, pool: &ThreadPool) -> Result<(), String> {
                         .to_string();
                     let payload = args.get(1).cloned().unwrap_or(Value::Null);
                     registry
-                        .emit_event(&eid, payload)
-                        .map_err(|e| format!("{tag}: emit_event: {e}"))?;
+                        .emit(DynEvent::new(eid, payload))
+                        .map_err(|e| format!("{tag}: emit: {e}"))?;
                 } else if let Some(args) = trigger.get("registerCommand").and_then(Value::as_array)
                 {
                     let id = args

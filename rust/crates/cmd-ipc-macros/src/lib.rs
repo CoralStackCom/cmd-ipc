@@ -16,6 +16,7 @@
 mod attr_args;
 mod command_attr;
 mod commands_attr;
+mod event_attr;
 
 use proc_macro::TokenStream;
 
@@ -69,6 +70,38 @@ pub fn command(attr: TokenStream, item: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn command_service(attr: TokenStream, item: TokenStream) -> TokenStream {
     commands_attr::expand(attr.into(), item.into())
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
+}
+
+/// Attach to a payload struct to register it as a typed event.
+///
+/// The struct must also derive `Serialize`, `Deserialize`, and
+/// `JsonSchema` — those drive the wire payload and the advertised
+/// schema. The macro emits an `impl Event` with the id and schema.
+/// For human-readable descriptions, use a `///` doc comment on the
+/// struct — there is no `description = "..."` attribute argument.
+///
+/// ```ignore
+/// /// Worker has finished initializing.
+/// #[event("worker.ready")]
+/// #[derive(Deserialize, Serialize, JsonSchema)]
+/// pub struct WorkerReady {
+///     pub worker_id: String,
+///     pub command_count: u32,
+/// }
+///
+/// // Emit with full type safety:
+/// registry.emit(WorkerReady { worker_id: "w1".into(), command_count: 2 })?;
+///
+/// // Subscribe — callback receives a deserialized `WorkerReady`:
+/// let _unsub = registry.on::<WorkerReady>(|event| {
+///     println!("{} ready", event.worker_id);
+/// });
+/// ```
+#[proc_macro_attribute]
+pub fn event(attr: TokenStream, item: TokenStream) -> TokenStream {
+    event_attr::expand(attr.into(), item.into())
         .unwrap_or_else(syn::Error::into_compile_error)
         .into()
 }

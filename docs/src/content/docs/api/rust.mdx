@@ -58,8 +58,9 @@ let registry = CommandRegistry::new(Config {
 | `register_channel(channel)` | `registerChannel` | Returns a driver future — spawn it on your executor |
 | `execute_command::<Req, Res>(id, req)` | loose `executeCommand` | Use `::<Value, Value>` for fully dynamic dispatch |
 | `execute::<C>(req)` | strict `executeCommand<K>` | `C: Command` pins request and response types |
-| `emit_event(event, payload)` | `emitEvent` | Returns `Result` (serde errors surface here) |
-| `add_event_listener(event, cb)` | `addEventListener` | Returns `impl FnOnce()` unsubscribe |
+| `emit(event)` | `emitEvent` | Single entry point. Takes any `E: Event` — typed `#[event]`-macro structs or [`DynEvent`](#event-trait) |
+| `on::<E>(cb)` | typed `addEventListener` | `E: Event + DeserializeOwned`; callback receives deserialized `E` |
+| `on_dyn(id, cb)` | dynamic `addEventListener` | Runtime id; callback receives raw `Value` |
 | `list_commands()` | `listCommands` | Returns `Vec<CommandDef>` |
 | `list_channels()` | `listChannels` | Returns connected channel IDs |
 | `dispose()` | `dispose` | Closes all channels, drops commands |
@@ -137,6 +138,51 @@ registry.register_command(cmd).await?;
 
 `DynCommand::new` takes an id + handler. `.description(..)` and `.schema(..)` are optional builder methods.
 
+## Event trait
+
+Typed events — the event payload struct *is* the event. Attach `#[event("id")]` to a struct that also derives `Serialize` / `Deserialize` / `JsonSchema` and it becomes a typed event usable with `emit` / `on`.
+
+```rust
+use coralstack_cmd_ipc::prelude::*;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
+/// Worker has finished initializing.
+#[event("worker.ready")]
+#[derive(Deserialize, Serialize, JsonSchema)]
+pub struct WorkerReady {
+    pub worker_id: String,
+    pub command_count: u32,
+}
+
+// Emit — fully typed.
+registry.emit(WorkerReady {
+    worker_id: "w1".into(),
+    command_count: 2,
+})?;
+
+// Listen — callback receives a deserialized `WorkerReady`.
+let _unsub = registry.on::<WorkerReady>(|event| {
+    println!("{} ready with {}", event.worker_id, event.command_count);
+});
+```
+
+### Runtime-constructed events: `DynEvent`
+
+When the id or payload shape is only known at runtime, build a `DynEvent`:
+
+```rust
+use serde_json::json;
+
+registry.emit(DynEvent::new("plugin.foo", json!({ "ok": true })))?;
+
+let _unsub = registry.on_dyn("plugin.foo", |payload| {
+    println!("got dynamic event: {payload}");
+});
+```
+
+Private events (id starts with `_`) fire only to local listeners — never broadcast across channels. Same rule as for commands.
+
 ## CommandChannel trait
 
 ```rust
@@ -163,6 +209,7 @@ Re-exported from `coralstack-cmd-ipc-macros`. See [Defining Commands](/cmd-ipc/g
 - `#[command_service]` — attribute on an `impl Host` block. Generates:
   - `Host.register(&registry).await?` — installs every tagged method.
   - A nested `pub(super) mod host_snake_case_name` containing one wrapper type per method, reachable for strict execute: `registry.execute::<host_name::MethodName>(req).await?`.
+- `#[event("id")]` — attribute on a payload struct that derives `Serialize` / `Deserialize` / `JsonSchema`. Emits an `impl Event for Struct` with id and schemars-derived schema. The struct is then usable as `registry.emit(Struct { .. })` and `registry.on::<Struct>(cb)`. Use a `///` doc comment on the struct for human-readable descriptions.
 
 ## Errors
 
