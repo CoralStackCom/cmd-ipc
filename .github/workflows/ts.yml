@@ -44,3 +44,6 @@ jobs:
 
       - name: Run tests
         run: yarn test:run
+
+      - name: Conformance (TS)
+        run: yarn conformance

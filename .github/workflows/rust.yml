@@ -40,3 +40,6 @@ jobs:
 
       - name: Test
         run: cargo test --workspace
+
+      - name: Conformance (Rust)
+        run: cargo test -p coralstack-cmd-ipc --test conformance
