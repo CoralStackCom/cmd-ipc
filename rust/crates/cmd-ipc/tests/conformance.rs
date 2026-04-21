@@ -608,8 +608,7 @@ fn run_behavior_vector(file: &Path, pool: &ThreadPool) -> Result<(), String> {
                     let (tx, rx) = oneshot::channel::<Result<Value, LocalCallErr>>();
                     let registry_clone = registry.clone();
                     pool.spawn(async move {
-                        let result: Result<Value, _> =
-                            registry_clone.execute_command(&cmd, req).await;
+                        let result = registry_clone.execute_dyn(&cmd, req).await;
                         let _ = tx.send(result.map_err(|e| command_error_to_local_err(&e)));
                     })
                     .map_err(|e| format!("{tag}: spawn: {e}"))?;
@@ -760,7 +759,7 @@ fn run_behavior_vector(file: &Path, pool: &ThreadPool) -> Result<(), String> {
         }
     }
 
-    registry.dispose();
+    block_on(registry.dispose());
     Ok(())
 }
 

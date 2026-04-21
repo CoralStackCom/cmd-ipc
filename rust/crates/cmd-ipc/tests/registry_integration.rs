@@ -152,7 +152,7 @@ fn child_executes_command_on_root_via_router() {
         reg_a.register_command(MathAdd).await.unwrap();
 
         let res: i64 = reg_b
-            .execute_command("math.add", AddReq { a: 2, b: 3 })
+            .execute::<MathAdd>(AddReq { a: 2, b: 3 })
             .await
             .unwrap();
         assert_eq!(res, 5);
@@ -167,7 +167,7 @@ fn child_registration_escalates_and_root_can_invoke() {
         // Register on the child — escalates to the root.
         reg_b.register_command(Greet).await.unwrap();
 
-        let res: String = reg_a.execute_command("greet", "world").await.unwrap();
+        let res: String = reg_a.execute::<Greet>("world".to_string()).await.unwrap();
         assert_eq!(res, "hello, world");
     });
 }
@@ -189,7 +189,7 @@ fn unknown_command_returns_not_found() {
 
     block_on(async {
         let err = reg_b
-            .execute_command::<_, ()>("missing.cmd", json!({}))
+            .execute_dyn("missing.cmd", json!({}))
             .await
             .unwrap_err();
         assert!(matches!(err, CommandError::NotFound(_)));
@@ -202,10 +202,7 @@ fn handler_error_surfaces_to_caller() {
 
     block_on(async {
         reg_a.register_command(Failing).await.unwrap();
-        let err = reg_b
-            .execute_command::<_, ()>("explode", ())
-            .await
-            .unwrap_err();
+        let err = reg_b.execute::<Failing>(()).await.unwrap_err();
         match err {
             CommandError::Internal { message, .. } => assert_eq!(message, "boom"),
             other => panic!("expected Internal error, got {other:?}"),
@@ -231,7 +228,7 @@ fn private_command_stays_local() {
         reg_a.register_command(LocalOnly).await.unwrap();
 
         // Local call on A works.
-        let res: i32 = reg_a.execute_command("_secret", ()).await.unwrap();
+        let res: i32 = reg_a.execute::<LocalOnly>(()).await.unwrap();
         assert_eq!(res, 7);
 
         // Call from B does NOT escalate private commands — router
@@ -241,7 +238,7 @@ fn private_command_stays_local() {
         // forwards and A serves it locally. This is the same
         // behavior as the TS library: privacy prevents advertising,
         // not serving. So the call succeeds.
-        let via_router: i32 = reg_b.execute_command("_secret", ()).await.unwrap();
+        let via_router: i32 = reg_b.execute::<LocalOnly>(()).await.unwrap();
         assert_eq!(via_router, 7);
     });
 }
@@ -308,7 +305,7 @@ fn channel_close_fails_pending_executes() {
         reg_a.register_command(HangForever).await.unwrap();
 
         // Kick off the execute but don't await yet.
-        let fut = reg_b.execute_command::<_, ()>("hang", ());
+        let fut = reg_b.execute::<HangForever>(());
         let handle = futures::FutureExt::boxed(fut);
 
         // Give the request a beat to land on A.

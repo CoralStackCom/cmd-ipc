@@ -110,6 +110,7 @@ export const sidebar: SidebarSection[] = [
         label: 'Rust',
         items: [
           { label: 'Multi-Service CLI', slug: 'examples/rust/multi-service' },
+          { label: 'Dynamic Plugin', slug: 'examples/rust/dynamic-plugin' },
         ],
       },
     ],

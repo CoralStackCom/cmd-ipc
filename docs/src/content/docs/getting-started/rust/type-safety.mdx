@@ -5,7 +5,7 @@ description: Compile-time and runtime type checking in the Rust implementation
 
 import { Aside } from '@astrojs/starlight/components';
 
-The Rust implementation is **strict by default** — both command request/response types and event payload types *are* the schema. There is no "loose mode" equivalent to the TypeScript version; for dynamic dispatch you opt into `serde_json::Value` explicitly.
+The Rust implementation is **strict by default** — both command request/response types and event payload types *are* the schema. For runtime-known ids (plugin hosts, FFI, scripting runtimes) there's an explicit loose-mode entry point: `execute_dyn(id, serde_json::Value)` on the call side, `DynCommand` / `DynEvent` on the registration side. The strict and loose paths share one registry.
 
 ## Commands
 
@@ -60,27 +60,21 @@ let diff: i64 = registry.execute::<math_service::Sub>(SubReq { a: 10, b: 4 }).aw
 
 No service instance required — `math_service::Add` is just a type path. The generated structs inherit `pub(super)` visibility, so private request/response types in the parent module stay private without forcing `pub`; users who want to reach the command types from another module can `pub use self::math_service::*;` to re-export.
 
-### Loose mode: `execute_command::<Req, Res>()`
+### Loose mode: `execute_dyn(id, value)`
 
-For runtime-known command IDs (scripting runtimes, FFI, generic tooling), use the generic form and pass types via turbofish. Reach for `serde_json::Value` on both sides for fully dynamic dispatch:
-
-```rust
-use serde_json::Value;
-
-let payload: Value = serde_json::json!({ "a": 1, "b": 2 });
-let result: Value = registry
-    .execute_command::<Value, Value>("math.add", payload)
-    .await?;
-```
-
-You can also pin one side and leave the other generic — e.g. known request type but dynamic response:
+For runtime-known command IDs (scripting runtimes, FFI, generic tooling), use `execute_dyn`. It takes raw `serde_json::Value`s on both sides — no turbofish, no type gymnastics:
 
 ```rust
-let v: Value = registry.execute_command::<AddReq, Value>("math.add", req).await?;
+use serde_json::{json, Value};
+
+let payload: Value = json!({ "a": 1, "b": 2 });
+let result: Value = registry.execute_dyn("math.add", payload).await?;
 ```
+
+When the request is known at compile time but the response isn't (or vice versa), serialize the typed side yourself with `serde_json::to_value` before calling `execute_dyn`, or deserialize the returned `Value` into your type after.
 
 <Aside type="tip">
-  Prefer `execute::<C>()` wherever the command is known at compile time. Fall back to `execute_command::<Req, Res>()` only when you genuinely need dynamic dispatch.
+  Prefer `execute::<C>()` wherever the command is known at compile time. Fall back to `execute_dyn(id, value)` only when you genuinely need dynamic dispatch.
 </Aside>
 
 ### Runtime-constructed commands: `DynCommand`
@@ -105,7 +99,17 @@ let cmd = DynCommand::new(runtime_id, |req: AddReq| async move {
 registry.register_command(cmd).await?;
 ```
 
-`execute::<C>()` isn't meaningful for a `DynCommand` (there's no compile-time id to pin), so dispatch dynamically-registered commands via `execute_command::<Req, Res>()`.
+For a heterogeneous collection of runtime commands (a plugin host holding many handlers), use the type-erased `BoxedDynCommand`:
+
+```rust
+use coralstack_cmd_ipc::BoxedDynCommand;
+
+let a: BoxedDynCommand = DynCommand::boxed("plugin.hello", |_| async { Ok(json!("hi")) });
+let b: BoxedDynCommand = DynCommand::boxed("plugin.bye",   |_| async { Ok(json!("bye")) });
+let commands: Vec<BoxedDynCommand> = vec![a, b];
+```
+
+`execute::<C>()` isn't meaningful for a `DynCommand` (there's no compile-time id to pin), so dispatch dynamically-registered commands via `execute_dyn(id, value)`.
 
 ### Request / response type constraints
 
@@ -116,12 +120,15 @@ The `Command` trait imposes minimal constraints:
 | `C::Request` | `Deserialize + JsonSchema` | Deserialized from the wire; its schema is advertised to peers |
 | `C::Response` | `Serialize` | Serialized to the wire |
 
-Both types also need `Send + 'static` if they cross await points in the handler (i.e., pretty much always). In practice, derive the four standard traits:
+Both types also need `Send + 'static` if they cross await points in the handler (i.e., pretty much always). In practice, use `#[payload]`:
 
 ```rust
-#[derive(Serialize, Deserialize, JsonSchema, Clone)]
+#[payload]
+#[derive(Clone)]
 struct AddReq { a: i64, b: i64 }
 ```
+
+`#[payload]` emits the `Serialize` / `Deserialize` / `JsonSchema` derives (against the `coralstack-cmd-ipc` re-exports). Any extra derives you need — `Clone`, `Debug`, `PartialEq` — stack on top normally.
 
 ### Error types
 
@@ -150,10 +157,8 @@ Every event has a compile-time identity via the `Event` trait. The `#[event]` ma
 
 ```rust
 use coralstack_cmd_ipc::prelude::*;
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
 
-#[derive(Deserialize, Serialize, JsonSchema)]
+#[payload]
 pub struct WorkerReady {
     pub worker_id: String,
     pub command_count: u32,
@@ -165,16 +170,19 @@ impl Event for WorkerReady {
 }
 ```
 
-With the `#[event]` macro, that collapses to:
+With the `#[event]` macro, that collapses to a single attribute which also auto-derives the three serde traits:
 
 ```rust
 /// Worker has finished initializing.
 #[event("worker.ready")]
-#[derive(Deserialize, Serialize, JsonSchema)]
 pub struct WorkerReady {
     pub worker_id: String,
     pub command_count: u32,
 }
+
+// Void event — a unit struct emits no payload on the wire.
+#[event("worker.tick")]
+pub struct WorkerTick;
 ```
 
 Emit and listen are both strict — compile-time checked, no JSON juggling at the call sites:
@@ -219,11 +227,11 @@ The `Event` trait imposes minimal constraints:
 | Event struct | `Serialize + Send + Sync + 'static` | Serialized to the wire on `emit` |
 | Event struct (for `on::<E>`) | Additionally `DeserializeOwned` | Deserialized before delivery to the callback |
 
-In practice: derive the four standard traits, matching commands:
+In practice: `#[event]` already auto-derives the three serde traits. Stack `#[derive(Clone, Debug, …)]` on top if you need more:
 
 ```rust
 #[event("worker.ready")]
-#[derive(Serialize, Deserialize, JsonSchema, Clone)]
+#[derive(Clone, Debug)]
 pub struct WorkerReady { ... }
 ```
 
@@ -240,6 +248,7 @@ This is what makes the cross-language routing claim concrete: the schemas aren't
 ## Best practices
 
 1. **Prefer the typed entry points** — `execute::<C>()` for commands, `emit(event)` + `on::<E>(cb)` for events. Compile-time identity beats runtime strings every time.
-2. **Derive `schemars::JsonSchema` on every request/response/payload type** — otherwise the registry can't advertise a schema and cross-language peers fall back to permissive validation.
+2. **Use `#[payload]` / `#[event]`** on every request / response / event type. They emit the schemars + serde derives against the cmd-ipc re-exports, which is what drives schema advertising to peers.
 3. **Keep types owned** (`String`, not `&str`) — handlers and event callbacks run across await points / channel boundaries.
-4. **Use the prelude** — `use coralstack_cmd_ipc::prelude::*;` pulls in `Command`, `Event`, `DynCommand`, `DynEvent`, the macros, and the common traits in one line.
+4. **Use the prelude** — `use coralstack_cmd_ipc::prelude::*;` pulls in `Command`, `Event`, `DynCommand`, `DynEvent`, `BoxedDynCommand`, the macros, and the common traits in one line.
+5. **Model void as `()`** for both request and response. The macros detect it and omit the schema slot; the registry omits the wire field.

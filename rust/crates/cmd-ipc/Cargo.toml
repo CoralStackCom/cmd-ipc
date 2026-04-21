@@ -18,6 +18,7 @@ schemars.workspace = true
 futures.workspace = true
 uuid.workspace = true
 thiserror.workspace = true
+parking_lot.workspace = true
 coralstack-cmd-ipc-macros = { path = "../cmd-ipc-macros", version = "0.1.0" }
 
 [dev-dependencies]

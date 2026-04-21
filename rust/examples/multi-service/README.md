@@ -1,7 +1,7 @@
 # multi-service
 
 A single-process Rust example demonstrating cross-registry command
-routing with the `#[commands]` macro.
+routing with the `#[command_service]` macro.
 
 ## Topology
 
@@ -96,7 +96,7 @@ with what the TypeScript implementation sends in
 
 ## What this example proves
 
-- **`#[commands]` macro** registers methods as typed commands with a
+- **`#[command_service]` macro** registers methods as typed commands with a
   single `Service.register(&registry).await?` call, mirroring the
   TS `@Command` + `registerCommands()` UX.
 - **Cross-registry routing** — `math.*` is handled on the worker yet

@@ -1,5 +1,5 @@
 ---
-title: Multi-Service (Rust)
+title: Multi-Service
 description: Two registries, one process, cross-registry routing via InMemoryChannel
 ---
 
@@ -52,10 +52,8 @@ cd rust && cargo run -p multi-service
 
 ```rust
 use coralstack_cmd_ipc::prelude::*;
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
 
-#[derive(Deserialize, Serialize, JsonSchema)]
+#[payload]
 pub struct BinaryOpReq { pub a: i64, pub b: i64 }
 
 pub struct MathService;

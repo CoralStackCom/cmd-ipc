@@ -21,13 +21,14 @@
 use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use futures::channel::oneshot;
 use futures::future::BoxFuture;
 use futures::FutureExt;
-use serde::{de::DeserializeOwned, Serialize};
+use parking_lot::Mutex;
+use serde::Serialize;
 use serde_json::Value;
 use uuid::Uuid;
 
@@ -152,14 +153,7 @@ impl CommandRegistry {
     ///
     /// Mirrors the TypeScript library's `listChannels()` method.
     pub fn list_channels(&self) -> Vec<String> {
-        let mut ids: Vec<String> = self
-            .inner
-            .channels
-            .lock()
-            .unwrap()
-            .keys()
-            .cloned()
-            .collect();
+        let mut ids: Vec<String> = self.inner.channels.lock().keys().cloned().collect();
         ids.sort();
         ids
     }
@@ -174,12 +168,12 @@ impl CommandRegistry {
     /// if both a local and remote entry exist (local wins).
     pub fn list_commands(&self) -> Vec<CommandDef> {
         let mut out: HashMap<String, CommandDef> = HashMap::new();
-        for (id, entry) in self.inner.local.lock().unwrap().iter() {
+        for (id, entry) in self.inner.local.lock().iter() {
             if !entry.is_private {
                 out.insert(id.clone(), entry.def.clone());
             }
         }
-        for (id, def) in self.inner.remote_defs.lock().unwrap().iter() {
+        for (id, def) in self.inner.remote_defs.lock().iter() {
             out.entry(id.clone()).or_insert_with(|| def.clone());
         }
         let mut v: Vec<CommandDef> = out.into_values().collect();
@@ -193,8 +187,8 @@ impl CommandRegistry {
     /// and runtime commands:
     ///
     /// - **Compile-time**: pass an instance of a type that implements
-    ///   [`Command`]. The `#[command]` / `#[commands]` macros generate
-    ///   such types from a plain `async fn`.
+    ///   [`Command`]. The `#[command]` / `#[command_service]` macros
+    ///   generate such types from a plain `async fn`.
     /// - **Runtime**: pass a [`DynCommand`] carrying owned id /
     ///   description / schema and a closure handler.
     ///
@@ -253,14 +247,14 @@ impl CommandRegistry {
         is_private: bool,
     ) -> Result<(), CommandError> {
         // Duplicate check against the local table.
-        if self.inner.local.lock().unwrap().contains_key(&id) {
+        if self.inner.local.lock().contains_key(&id) {
             return Err(CommandError::DuplicateCommand(id));
         }
 
         // Non-private commands escalate to the router before being added.
         if !is_private {
             if let Some(router_id) = self.inner.router_channel.clone() {
-                let router_ch = self.inner.channels.lock().unwrap().get(&router_id).cloned();
+                let router_ch = self.inner.channels.lock().get(&router_id).cloned();
                 if let Some(router_ch) = router_ch {
                     let req_id = MessageId::new_v4();
                     let (tx, rx) = oneshot::channel();
@@ -292,7 +286,7 @@ impl CommandRegistry {
             }
         }
 
-        self.inner.local.lock().unwrap().insert(
+        self.inner.local.lock().insert(
             id,
             LocalEntry {
                 handler,
@@ -316,7 +310,7 @@ impl CommandRegistry {
     ) -> Result<impl Future<Output = ()> + Send + 'static, ChannelError> {
         let id = channel.id().to_string();
         {
-            let mut chans = self.inner.channels.lock().unwrap();
+            let mut chans = self.inner.channels.lock();
             if chans.contains_key(&id) {
                 return Err(ChannelError::Other(format!(
                     "channel with id `{id}` already registered"
@@ -332,7 +326,7 @@ impl CommandRegistry {
         if let Err(e) = channel.send(Message::ListCommandsRequest {
             id: MessageId::new_v4(),
         }) {
-            self.inner.channels.lock().unwrap().remove(&id);
+            self.inner.channels.lock().remove(&id);
             return Err(e);
         }
 
@@ -344,32 +338,6 @@ impl CommandRegistry {
             }
             Inner::handle_channel_close(&inner, ch.id());
         })
-    }
-
-    /// Executes a command — the **loose** form, mirroring the TypeScript
-    /// library's `executeCommand(id, ...args)` in loose mode. Looks up
-    /// in local, then remote, then escalates to `router_channel`.
-    ///
-    /// `Req` and `Res` are generic: specify them via turbofish or type
-    /// annotation. For purely dynamic dispatch use
-    /// `execute_command::<serde_json::Value, serde_json::Value>(...)`.
-    /// For statically-known commands, prefer [`execute`](Self::execute)
-    /// which pins the types from a [`Command`] trait impl.
-    pub async fn execute_command<Req, Res>(
-        &self,
-        command_id: &str,
-        request: Req,
-    ) -> Result<Res, CommandError>
-    where
-        Req: Serialize,
-        Res: DeserializeOwned,
-    {
-        let req_value = serde_json::to_value(request)?;
-        let result = self
-            .execute_raw_impl(command_id.to_string(), req_value)
-            .await?;
-        let deserialized = serde_json::from_value(result.unwrap_or(Value::Null))?;
-        Ok(deserialized)
     }
 
     /// Executes a command identified by a compile-time [`Command`] type
@@ -385,18 +353,44 @@ impl CommandRegistry {
     /// let sum: i64 = registry.execute::<MathAdd>(AddReq { a: 2, b: 3 }).await?;
     /// ```
     ///
-    /// For commands only known at runtime (scripting runtimes, FFI)
-    /// use [`execute_command`](Self::execute_command).
+    /// For commands whose id or payload shape is only known at runtime
+    /// (scripting hosts, FFI, plugins that advertise their own schema),
+    /// use [`execute_dyn`](Self::execute_dyn).
     pub async fn execute<C: Command>(
         &self,
         request: C::Request,
     ) -> Result<C::Response, CommandError>
     where
         C::Request: Serialize,
-        C::Response: DeserializeOwned,
+        C::Response: serde::de::DeserializeOwned,
     {
-        self.execute_command::<C::Request, C::Response>(C::ID, request)
-            .await
+        let req_value = value_from_request(&request)?;
+        let result = self.execute_raw_impl(C::ID.to_string(), req_value).await?;
+        let deserialized = serde_json::from_value(result.unwrap_or(Value::Null))?;
+        Ok(deserialized)
+    }
+
+    /// Executes a command whose id is only known at runtime — the
+    /// **loose** form, mirroring the TypeScript library's
+    /// `executeCommand(id, args)` in loose mode.
+    ///
+    /// Request and response are raw [`serde_json::Value`]s, so this is
+    /// the canonical entry point for plugin hosts, scripting runtimes,
+    /// FFI bridges, and any code where the schema is discovered via
+    /// [`list_commands`](Self::list_commands) rather than declared at
+    /// compile time.
+    ///
+    /// For statically-known commands, prefer [`execute`](Self::execute)
+    /// — it pins both types via the [`Command`] trait.
+    pub async fn execute_dyn(
+        &self,
+        command_id: &str,
+        request: Value,
+    ) -> Result<Value, CommandError> {
+        let result = self
+            .execute_raw_impl(command_id.to_string(), request)
+            .await?;
+        Ok(result.unwrap_or(Value::Null))
     }
 
     async fn execute_raw_impl(
@@ -409,7 +403,6 @@ impl CommandRegistry {
             .inner
             .local
             .lock()
-            .unwrap()
             .get(&command_id)
             .map(|entry| entry.handler.clone());
         if let Some(handler) = local_handler {
@@ -420,7 +413,7 @@ impl CommandRegistry {
         }
 
         // 2) Known remote command.
-        let remote_target = self.inner.remote.lock().unwrap().get(&command_id).cloned();
+        let remote_target = self.inner.remote.lock().get(&command_id).cloned();
         let target = match remote_target {
             Some(t) => Some(t),
             None => self.inner.router_channel.clone(),
@@ -430,7 +423,7 @@ impl CommandRegistry {
             return Err(CommandError::NotFound(command_id));
         };
 
-        let channel = self.inner.channels.lock().unwrap().get(&target_id).cloned();
+        let channel = self.inner.channels.lock().get(&target_id).cloned();
         let Some(channel) = channel else {
             return Err(CommandError::ChannelDisconnected);
         };
@@ -459,7 +452,10 @@ impl CommandRegistry {
             .send(Message::ExecuteCommandRequest {
                 id: req_id,
                 command_id: command_id.clone(),
-                request: Some(request),
+                // Void requests are elided from the wire (Null → None)
+                // so peers expecting an absent `request` field (per the
+                // JSON Schema spec) don't see `"request": null`.
+                request: value_to_wire(request),
             })
             .map_err(|_| CommandError::ChannelDisconnected)?;
 
@@ -490,19 +486,16 @@ impl CommandRegistry {
         self.dispatch_event_locally(&event_id, &payload_value);
 
         if !event_id.starts_with('_') {
-            let channels: Vec<Arc<dyn CommandChannel>> = self
-                .inner
-                .channels
-                .lock()
-                .unwrap()
-                .values()
-                .cloned()
-                .collect();
+            let channels: Vec<Arc<dyn CommandChannel>> =
+                self.inner.channels.lock().values().cloned().collect();
+            // Void payloads (serde `()` → `Value::Null`) are elided
+            // from the wire per the event schema (`payload` is optional).
+            let wire_payload = value_to_wire(payload_value);
             for ch in channels {
                 let _ = ch.send(Message::Event {
                     id: msg_id,
                     event_id: event_id.clone(),
-                    payload: Some(payload_value.clone()),
+                    payload: wire_payload.clone(),
                 });
             }
         }
@@ -565,7 +558,6 @@ impl CommandRegistry {
         self.inner
             .event_listeners
             .lock()
-            .unwrap()
             .entry(event_id.to_string())
             .or_default()
             .insert(token, Arc::new(listener));
@@ -573,7 +565,7 @@ impl CommandRegistry {
         let inner = Arc::clone(&self.inner);
         let event_id = event_id.to_string();
         move || {
-            let mut map = inner.event_listeners.lock().unwrap();
+            let mut map = inner.event_listeners.lock();
             if let Some(slot) = map.get_mut(&event_id) {
                 slot.remove(&token);
                 if slot.is_empty() {
@@ -588,7 +580,6 @@ impl CommandRegistry {
             .inner
             .event_listeners
             .lock()
-            .unwrap()
             .get(event_id)
             .map(|m| m.values().cloned().collect())
             .unwrap_or_default();
@@ -597,41 +588,43 @@ impl CommandRegistry {
         }
     }
 
-    /// Tears down the registry: closes every channel, drops every local
-    /// and remote command, and clears all event listeners. In-flight
-    /// executes and register requests fail with
-    /// [`CommandError::ChannelDisconnected`] via the existing
+    /// Tears down the registry: awaits `close()` on every connected
+    /// channel, drops every local and remote command, and clears all
+    /// event listeners. In-flight executes and register requests fail
+    /// with [`CommandError::ChannelDisconnected`] via the existing
     /// channel-close path.
     ///
-    /// Mirrors the TypeScript library's `dispose()`. Callers normally
-    /// don't need this — dropping the last `CommandRegistry` clone
-    /// releases the inner state automatically via `Drop`. Use `dispose`
-    /// when a *shared* registry (held through multiple clones) needs to
-    /// be forcibly torn down, or in tests.
-    pub fn dispose(&self) {
+    /// Mirrors the TypeScript library's `dispose()`, but async so that
+    /// transports doing real teardown work (HTTP flush, MCP goodbye,
+    /// plugin sandbox shutdown) complete before this returns.
+    ///
+    /// Callers normally don't need this — dropping the last
+    /// `CommandRegistry` clone releases the inner state automatically
+    /// via `Drop`. Use `dispose` when a *shared* registry (held through
+    /// multiple clones) needs to be forcibly torn down, or in tests.
+    pub async fn dispose(&self) {
         // Snapshot channel arcs so we can call `close` without holding
         // the channels lock for the duration.
         let channels: Vec<Arc<dyn CommandChannel>> = {
-            let mut locked = self.inner.channels.lock().unwrap();
+            let mut locked = self.inner.channels.lock();
             let out: Vec<_> = locked.values().cloned().collect();
             locked.clear();
             out
         };
+
+        // Await each channel's close sequentially. Channels define
+        // their own close semantics (InMemoryChannel is effectively
+        // synchronous; MCPServerChannel flushes the transport; Flow's
+        // SourceChannel tears down its QuickJS VM), so we let every
+        // implementation finish its teardown before returning.
         for ch in channels {
-            // `close` is async on the channel trait; fire-and-forget
-            // the tear-down. The channel's own driver future will see
-            // EOF and run handle_channel_close, finishing cleanup.
-            let fut = ch.close();
-            // Drop the future — the channel impl's `close` signals
-            // synchronously; polling is only to let cooperative impls
-            // drain. Best-effort teardown is the right semantics here.
-            drop(fut);
+            ch.close().await;
         }
 
-        self.inner.local.lock().unwrap().clear();
-        self.inner.remote.lock().unwrap().clear();
-        self.inner.remote_defs.lock().unwrap().clear();
-        self.inner.event_listeners.lock().unwrap().clear();
+        self.inner.local.lock().clear();
+        self.inner.remote.lock().clear();
+        self.inner.remote_defs.lock().clear();
+        self.inner.event_listeners.lock().clear();
     }
 }
 
@@ -639,7 +632,6 @@ impl Inner {
     fn local_command_defs(&self) -> Vec<CommandDef> {
         self.local
             .lock()
-            .unwrap()
             .values()
             .filter(|e| !e.is_private)
             .map(|e| e.def.clone())
@@ -667,8 +659,8 @@ impl Inner {
             }
             Message::ListCommandsResponse { commands, .. } => {
                 let channel_id = channel.id().to_string();
-                let mut remote = inner.remote.lock().unwrap();
-                let mut remote_defs = inner.remote_defs.lock().unwrap();
+                let mut remote = inner.remote.lock();
+                let mut remote_defs = inner.remote_defs.lock();
                 for cmd in commands {
                     // Normalize ingested schemas so the local cache
                     // matches what register() produces.
@@ -730,7 +722,7 @@ impl Inner {
         let command_id = command.id.clone();
 
         // Duplicate against local?
-        let dup = inner.local.lock().unwrap().contains_key(&command_id);
+        let dup = inner.local.lock().contains_key(&command_id);
         if dup {
             let _ = channel.send(Message::RegisterCommandResponse {
                 id: MessageId::new_v4(),
@@ -747,7 +739,6 @@ impl Inner {
         let dup_remote = inner
             .remote
             .lock()
-            .unwrap()
             .get(&command_id)
             .map(|existing| existing != &channel_id)
             .unwrap_or(false);
@@ -766,7 +757,7 @@ impl Inner {
         // Escalate upstream if we have a router.
         if let Some(router_id) = inner.router_channel.clone() {
             if router_id != channel_id {
-                let router_ch = inner.channels.lock().unwrap().get(&router_id).cloned();
+                let router_ch = inner.channels.lock().get(&router_id).cloned();
                 if let Some(router_ch) = router_ch {
                     let up_id = MessageId::new_v4();
                     let (tx, rx) = oneshot::channel();
@@ -812,16 +803,8 @@ impl Inner {
             }
         }
 
-        inner
-            .remote
-            .lock()
-            .unwrap()
-            .insert(command_id.clone(), channel_id);
-        inner
-            .remote_defs
-            .lock()
-            .unwrap()
-            .insert(command_id, command);
+        inner.remote.lock().insert(command_id.clone(), channel_id);
+        inner.remote_defs.lock().insert(command_id, command);
         let _ = channel.send(Message::RegisterCommandResponse {
             id: MessageId::new_v4(),
             thid: req_id,
@@ -840,7 +823,6 @@ impl Inner {
         let handler = inner
             .local
             .lock()
-            .unwrap()
             .get(&command_id)
             .map(|e| e.handler.clone());
         if let Some(handler) = handler {
@@ -848,7 +830,9 @@ impl Inner {
             let response = match result {
                 Ok(v) => ExecuteResult::Ok {
                     ok: True,
-                    result: Some(v),
+                    // Void responses (`() → Value::Null`) are elided from
+                    // the wire per the response schema (`result` optional).
+                    result: value_to_wire(v),
                 },
                 Err(error) => ExecuteResult::Err { ok: False, error },
             };
@@ -864,7 +848,6 @@ impl Inner {
         let target_id = inner
             .remote
             .lock()
-            .unwrap()
             .get(&command_id)
             .cloned()
             .or_else(|| inner.router_channel.clone());
@@ -901,7 +884,7 @@ impl Inner {
             return;
         }
 
-        let target = inner.channels.lock().unwrap().get(&target_id).cloned();
+        let target = inner.channels.lock().get(&target_id).cloned();
         let Some(target) = target else {
             let _ = origin.send(Message::ExecuteCommandResponse {
                 id: MessageId::new_v4(),
@@ -927,7 +910,7 @@ impl Inner {
         let _ = target.send(Message::ExecuteCommandRequest {
             id: req_id,
             command_id,
-            request: Some(request),
+            request: value_to_wire(request),
         });
     }
 
@@ -940,12 +923,7 @@ impl Inner {
 
         // …or we forwarded this request and need to route the reply.
         if let Some(route) = inner.routes.remove(&thid) {
-            let origin = inner
-                .channels
-                .lock()
-                .unwrap()
-                .get(&route.origin_channel)
-                .cloned();
+            let origin = inner.channels.lock().get(&route.origin_channel).cloned();
             if let Some(origin) = origin {
                 let _ = origin.send(Message::ExecuteCommandResponse {
                     id: MessageId::new_v4(),
@@ -972,7 +950,6 @@ impl Inner {
         let listeners: Vec<EventListener> = inner
             .event_listeners
             .lock()
-            .unwrap()
             .get(&event_id)
             .map(|m| m.values().cloned().collect())
             .unwrap_or_default();
@@ -987,7 +964,6 @@ impl Inner {
         let channels: Vec<Arc<dyn CommandChannel>> = inner
             .channels
             .lock()
-            .unwrap()
             .iter()
             .filter(|(k, _)| k.as_str() != origin.id())
             .map(|(_, v)| v.clone())
@@ -1004,12 +980,12 @@ impl Inner {
     /// Invoked by the driver once the channel returns `None` from recv.
     fn handle_channel_close(inner: &Arc<Self>, channel_id: &str) {
         // Drop the channel from the lookup table.
-        inner.channels.lock().unwrap().remove(channel_id);
+        inner.channels.lock().remove(channel_id);
 
         // Drop every remote command owned by this channel, along with
         // its cached definition.
         let dropped_ids: Vec<String> = {
-            let mut remote = inner.remote.lock().unwrap();
+            let mut remote = inner.remote.lock();
             let to_drop: Vec<String> = remote
                 .iter()
                 .filter(|(_, owner)| *owner == channel_id)
@@ -1020,7 +996,7 @@ impl Inner {
             }
             to_drop
         };
-        let mut remote_defs = inner.remote_defs.lock().unwrap();
+        let mut remote_defs = inner.remote_defs.lock();
         for id in dropped_ids {
             remote_defs.remove(&id);
         }
@@ -1066,12 +1042,7 @@ impl Inner {
                 if route.origin_channel == channel_id {
                     continue;
                 }
-                let origin = inner
-                    .channels
-                    .lock()
-                    .unwrap()
-                    .get(&route.origin_channel)
-                    .cloned();
+                let origin = inner.channels.lock().get(&route.origin_channel).cloned();
                 if let Some(origin) = origin {
                     let _ = origin.send(Message::ExecuteCommandResponse {
                         id: MessageId::new_v4(),
@@ -1142,4 +1113,26 @@ impl ExecuteError {
     fn into_command_error(self, command_id: &str) -> CommandError {
         error_to_command_error(self, command_id)
     }
+}
+
+/// Collapse a serialized request/result/payload value to `None` when it
+/// is JSON `null`. This is what makes void commands and events
+/// spec-compliant on the wire: `request` / `result` / `payload` are all
+/// optional fields in the JSON schemas, so an absent value must be
+/// encoded by omitting the key, not by emitting `null`.
+///
+/// Used on every outgoing `execute.command.request`,
+/// `execute.command.response` success, and `event` message.
+fn value_to_wire(v: Value) -> Option<Value> {
+    if v.is_null() {
+        None
+    } else {
+        Some(v)
+    }
+}
+
+/// Serialize a strict-mode request value to JSON. Wraps `serde_json`
+/// with the right error type for the strict `execute::<C>` path.
+fn value_from_request<T: Serialize>(v: &T) -> Result<Value, CommandError> {
+    serde_json::to_value(v).map_err(CommandError::Serde)
 }

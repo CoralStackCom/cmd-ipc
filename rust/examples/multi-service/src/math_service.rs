@@ -3,10 +3,8 @@
 //! registry over the in-memory channel.
 
 use coralstack_cmd_ipc::prelude::*;
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
 
-#[derive(Deserialize, Serialize, JsonSchema)]
+#[payload]
 pub struct BinaryOpReq {
     pub a: i64,
     pub b: i64,

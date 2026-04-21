@@ -9,8 +9,10 @@
 
 use std::future::Future;
 use std::marker::PhantomData;
+use std::pin::Pin;
 
 use serde::{de::DeserializeOwned, Serialize};
+use serde_json::Value;
 
 use crate::error::CommandError;
 use crate::message::CommandSchema;
@@ -143,11 +145,35 @@ where
         self
     }
 
-    /// Attach a JSON Schema advertised on the wire via
-    /// `register.command.request`. Omit to register without a schema
-    /// (peers will fall back to permissive validation).
+    /// Attach a full [`CommandSchema`] (both request + response slots)
+    /// advertised on the wire via `register.command.request`. Omit to
+    /// register without a schema (peers will fall back to permissive
+    /// validation).
     pub fn schema(mut self, schema: CommandSchema) -> Self {
         self.schema = Some(schema);
+        self
+    }
+
+    /// Attach only the request schema. Convenient when your runtime
+    /// introspection knows the argument shape but not the return.
+    pub fn request_schema(mut self, schema: Value) -> Self {
+        let mut s = self.schema.take().unwrap_or(CommandSchema {
+            request: None,
+            response: None,
+        });
+        s.request = Some(schema);
+        self.schema = Some(s);
+        self
+    }
+
+    /// Attach only the response schema.
+    pub fn response_schema(mut self, schema: Value) -> Self {
+        let mut s = self.schema.take().unwrap_or(CommandSchema {
+            request: None,
+            response: None,
+        });
+        s.response = Some(schema);
+        self.schema = Some(s);
         self
     }
 }
@@ -180,3 +206,59 @@ where
         (self.handler)(request)
     }
 }
+
+// -----------------------------------------------------------------------------
+// Boxed dynamic-command form — the canonical "store heterogeneous dynamic
+// commands in a Vec" shape. Used by Flow's `SourceChannel` and any plugin
+// host that holds a runtime table of `Value → Value` commands.
+// -----------------------------------------------------------------------------
+
+/// Type-erased async handler for a [`BoxedDynCommand`]: takes and
+/// returns raw JSON `Value`s.
+pub type BoxedHandler = Box<
+    dyn Fn(Value) -> Pin<Box<dyn Future<Output = Result<Value, CommandError>> + Send>>
+        + Send
+        + Sync,
+>;
+
+/// A [`DynCommand`] with fully erased handler types — request and
+/// response are `serde_json::Value`, the handler is a boxed async
+/// closure. Use when you need to store a heterogeneous collection of
+/// runtime commands (e.g. `Vec<BoxedDynCommand>` inside a plugin host).
+pub type BoxedDynCommand = DynCommand<Value, Value, BoxedHandler>;
+
+impl DynCommand<Value, Value, BoxedHandler> {
+    /// Construct a [`BoxedDynCommand`] from any async closure producing
+    /// a `Result<Value, CommandError>`. The handler's future is boxed so
+    /// the resulting command has a single concrete type, making it
+    /// suitable for heterogeneous collections.
+    ///
+    /// ```ignore
+    /// use coralstack_cmd_ipc::prelude::*;
+    /// use coralstack_cmd_ipc::BoxedDynCommand;
+    /// use serde_json::{json, Value};
+    ///
+    /// let cmd: BoxedDynCommand = DynCommand::boxed("plugin.hello", |req| async move {
+    ///     Ok(json!({ "you_sent": req }))
+    /// });
+    /// registry.register_command(cmd).await?;
+    /// ```
+    pub fn boxed<F, Fut>(id: impl Into<String>, handler: F) -> BoxedDynCommand
+    where
+        F: Fn(Value) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<Value, CommandError>> + Send + 'static,
+    {
+        let handler: BoxedHandler = Box::new(move |v: Value| Box::pin(handler(v)));
+        DynCommand {
+            id: id.into(),
+            description: None,
+            schema: None,
+            handler,
+            _pd: PhantomData,
+        }
+    }
+}
+
+// The `Fn(Value) -> BoxFuture` closure type satisfies the `Command` blanket
+// impl above because `BoxedHandler` is `Fn(Value) -> Pin<Box<dyn Future<...>>>`
+// and `Pin<Box<dyn Future>>` impls `Future`. No extra impl needed.

@@ -11,10 +11,8 @@ A command is an async function with an ID. The `#[command]` attribute macro bind
 
 ```rust
 use coralstack_cmd_ipc::prelude::*;
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
 
-#[derive(Deserialize, Serialize, JsonSchema)]
+#[payload]
 struct AddReq { a: i64, b: i64 }
 
 struct MathService;
@@ -35,21 +33,46 @@ MathService.register(&registry).await?;
 let sum: i64 = registry.execute::<math_service::Add>(AddReq { a: 2, b: 3 }).await?;
 ```
 
-## Request and response types are the schema
+<Aside type="tip">
+  `coralstack-cmd-ipc` is the only crate you need to list in `Cargo.toml`. It re-exports `serde` and `schemars`, which the `#[payload]` / `#[event]` macros expand against. No extra derive crates, no feature flags.
+</Aside>
 
-Rust doesn't have a separate schema map. Any type used in a handler needs `Serialize`, `Deserialize`, and `JsonSchema` derives — the registry generates the wire-level JSON Schema from those derives automatically, byte-compatible with what the TypeScript side emits via Valibot.
+## Request and response types
+
+`#[payload]` is the short form for "derive `Serialize` + `Deserialize` + `JsonSchema` against `coralstack-cmd-ipc`'s re-exports". Use it on every request and response struct:
 
 ```rust
-#[derive(Deserialize, Serialize, JsonSchema)]
+#[payload]
 pub struct CalcReq { pub a: f64, pub b: f64 }
 
-#[derive(Deserialize, Serialize, JsonSchema)]
+#[payload]
 pub struct CalcRes { pub result: f64 }
 ```
+
+You can still add extra derives (`Clone`, `Debug`, `PartialEq`) normally — `#[payload]` is additive.
 
 <Aside type="note">
   There's no `defineIds`-equivalent. Command IDs are plain string literals passed to the `#[command]` attribute.
 </Aside>
+
+## Void commands
+
+For commands that take no request, return no response, or both, use `()` in the signature. The macro detects `()` and omits the corresponding schema slot — the wire message sends no `request` / `result` key (per the protocol spec).
+
+```rust
+#[command_service]
+impl WorkerControl {
+    // No request, no response — fires and resolves.
+    #[command("worker.reset")]
+    async fn reset(&self) -> Result<(), CommandError> { Ok(()) }
+
+    // Request only.
+    #[command("worker.configure")]
+    async fn configure(&self, cfg: WorkerConfig) -> Result<(), CommandError> {
+        /* ... */ Ok(())
+    }
+}
+```
 
 ## Private commands
 
@@ -79,28 +102,39 @@ async fn greet(name: String) -> Result<String, CommandError> {
 register_greet(&registry).await?;
 ```
 
+## Strict vs loose dispatch
+
+| Form | Use for | Signature |
+|---|---|---|
+| `registry.execute::<C>(req).await?` | Compile-time known commands — any `C: Command` | Request + response types pinned to `C::Request` / `C::Response` |
+| `registry.execute_dyn(id, json!({..})).await?` | Runtime-known ids — plugin hosts, FFI, scripting | Raw JSON in, raw JSON out |
+
+The macros produce `Command`-implementing structs you can pass to `execute::<_>` with no turbofish juggling. For runtime-constructed commands, see [`DynCommand`](/cmd-ipc/api/rust/#runtime-constructed-commands-dyncommand).
+
 ## Defining events
 
-Events are fire-and-forget broadcasts — same registry, same channels, no response. Attach `#[event("id")]` to a payload struct that derives `Serialize` / `Deserialize` / `JsonSchema`; the struct *is* the event type.
+Events are fire-and-forget broadcasts — same registry, same channels, no response. Attach `#[event("id")]` to a payload struct. The macro auto-derives the three serde traits and emits the `Event` impl.
 
 ```rust
 use coralstack_cmd_ipc::prelude::*;
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
 
 /// Worker has finished initializing.
 #[event("worker.ready")]
-#[derive(Deserialize, Serialize, JsonSchema)]
 pub struct WorkerReady {
     pub worker_id: String,
     pub command_count: u32,
 }
+
+// Void event — unit struct, no payload on the wire.
+#[event("worker.tick")]
+pub struct WorkerTick;
 
 // Emit — fully typed.
 registry.emit(WorkerReady {
     worker_id: "w1".into(),
     command_count: 2,
 })?;
+registry.emit(WorkerTick)?;
 
 // Listen — callback receives a deserialized `WorkerReady`.
 let _unsub = registry.on::<WorkerReady>(|event| {
@@ -120,4 +154,3 @@ let _unsub = registry.on_dyn(runtime_id, |payload| {
     println!("got event: {payload}");
 });
 ```
-

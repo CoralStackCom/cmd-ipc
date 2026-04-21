@@ -18,6 +18,7 @@ use futures::channel::oneshot;
 use futures::future::{BoxFuture, Shared};
 use futures::lock::Mutex as AsyncMutex;
 use futures::{FutureExt, StreamExt};
+use parking_lot::Mutex;
 
 use crate::error::ChannelError;
 use crate::message::Message;
@@ -67,7 +68,7 @@ pub struct InMemoryChannel {
     // resolving `close_rx` so an in-flight `recv` can bail out even
     // when the peer's sender is still alive. The receiver is `Shared`
     // so it can be cloned per recv call.
-    close_tx: std::sync::Mutex<Option<oneshot::Sender<()>>>,
+    close_tx: Mutex<Option<oneshot::Sender<()>>>,
     close_rx: Shared<oneshot::Receiver<()>>,
     closed: AtomicBool,
 }
@@ -88,7 +89,7 @@ impl InMemoryChannel {
             id: id_a.into(),
             outbound: tx_a_to_b,
             inbound: AsyncMutex::new(Some(rx_a)),
-            close_tx: std::sync::Mutex::new(Some(close_a_tx)),
+            close_tx: Mutex::new(Some(close_a_tx)),
             close_rx: close_a_rx.shared(),
             closed: AtomicBool::new(false),
         });
@@ -96,7 +97,7 @@ impl InMemoryChannel {
             id: id_b.into(),
             outbound: tx_b_to_a,
             inbound: AsyncMutex::new(Some(rx_b)),
-            close_tx: std::sync::Mutex::new(Some(close_b_tx)),
+            close_tx: Mutex::new(Some(close_b_tx)),
             close_rx: close_b_rx.shared(),
             closed: AtomicBool::new(false),
         });
@@ -118,7 +119,7 @@ impl CommandChannel for InMemoryChannel {
             self.closed.store(true, Ordering::SeqCst);
             self.outbound.close_channel();
             // Fire the close signal so an in-flight recv exits.
-            if let Some(tx) = self.close_tx.lock().unwrap().take() {
+            if let Some(tx) = self.close_tx.lock().take() {
                 let _ = tx.send(());
             }
         })

@@ -10,8 +10,9 @@
 
 use std::collections::HashMap;
 use std::hash::Hash;
-use std::sync::Mutex;
 use std::time::{Duration, Instant};
+
+use parking_lot::Mutex;
 
 type OnExpire<K, V> = Box<dyn Fn(&K, V) + Send + Sync>;
 
@@ -62,14 +63,13 @@ where
     pub fn insert(&self, key: K, value: V) -> Option<V> {
         self.inner
             .lock()
-            .unwrap()
             .insert(key, (value, Instant::now()))
             .map(|(v, _)| v)
     }
 
     /// Removes and returns the value for `key`, bypassing expiry.
     pub fn remove(&self, key: &K) -> Option<V> {
-        self.inner.lock().unwrap().remove(key).map(|(v, _)| v)
+        self.inner.lock().remove(key).map(|(v, _)| v)
     }
 
     /// Returns whether `key` is present and unexpired.
@@ -77,7 +77,7 @@ where
     /// Triggers `on_expire` as a side effect if the entry is stale.
     pub fn contains_key(&self, key: &K) -> bool {
         self.take_if_expired(key);
-        self.inner.lock().unwrap().contains_key(key)
+        self.inner.lock().contains_key(key)
     }
 
     /// Returns a clone of the value for `key` if present and unexpired.
@@ -86,13 +86,13 @@ where
         V: Clone,
     {
         self.take_if_expired(key);
-        self.inner.lock().unwrap().get(key).map(|(v, _)| v.clone())
+        self.inner.lock().get(key).map(|(v, _)| v.clone())
     }
 
     /// Returns the current size of the map (including any stale entries
     /// that have not yet been touched).
     pub fn len(&self) -> usize {
-        self.inner.lock().unwrap().len()
+        self.inner.lock().len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -101,7 +101,7 @@ where
 
     /// Drops all entries without firing `on_expire`.
     pub fn clear(&self) {
-        self.inner.lock().unwrap().clear();
+        self.inner.lock().clear();
     }
 
     /// Removes every entry that has exceeded the TTL, firing
@@ -112,7 +112,7 @@ where
             return;
         }
         let expired: Vec<(K, V)> = {
-            let mut inner = self.inner.lock().unwrap();
+            let mut inner = self.inner.lock();
             let keys: Vec<K> = inner
                 .iter()
                 .filter(|(_, (_, t))| self.is_expired(*t))
@@ -137,7 +137,7 @@ where
     where
         F: Fn(&V) -> bool,
     {
-        let inner = self.inner.lock().unwrap();
+        let inner = self.inner.lock();
         inner
             .iter()
             .filter(|(_, (v, t))| !self.is_expired(*t) && pred(v))
@@ -151,7 +151,7 @@ where
             return;
         }
         let expired = {
-            let mut inner = self.inner.lock().unwrap();
+            let mut inner = self.inner.lock();
             match inner.get(key) {
                 Some((_, t)) if self.is_expired(*t) => inner.remove(key).map(|(v, _)| v),
                 _ => None,

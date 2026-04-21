@@ -18,26 +18,26 @@ This guide uses **[tokio](https://tokio.rs/)** as the async runtime. The `corals
 [dependencies]
 coralstack-cmd-ipc = "0.1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
-schemars = "1"
-serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 anyhow = "1"
 ```
 
+<Aside type="tip">
+  `coralstack-cmd-ipc` re-exports `serde` and `schemars`, which the `#[payload]` and `#[event]` macros expand against. That's why they don't appear in `Cargo.toml` — you only list `serde_json` here because the quick-start pokes at raw JSON values directly.
+</Aside>
+
 ## Step 1: Define Commands
 
-A `#[command_service]` impl block turns an ordinary `impl` into a set of typed commands. Each `#[command("id")]` method becomes a handler, and the `Serialize` / `Deserialize` / `JsonSchema` derives on the request / response types drive schema generation on the wire.
+A `#[command_service]` impl block turns an ordinary `impl` into a set of typed commands. Each `#[command("id")]` method becomes a handler. Declare request / response types with `#[payload]` — the macro auto-derives `Serialize` / `Deserialize` / `JsonSchema` against the cmd-ipc re-exports, and the registry generates the wire-level JSON Schema from those derives.
 
 ```rust
 // src/calc_service.rs
 use coralstack_cmd_ipc::prelude::*;
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
 
-#[derive(Deserialize, Serialize, JsonSchema)]
+#[payload]
 pub struct CalcReq { pub a: f64, pub b: f64 }
 
-#[derive(Deserialize, Serialize, JsonSchema)]
+#[payload]
 pub struct CalcRes { pub result: f64 }
 
 pub struct CalcService;
@@ -136,33 +136,31 @@ Once both drivers are running, the registries perform a handshake: each side adv
 With the channel up, the root registry dispatches through it for any command it doesn't own locally. Two dispatch modes:
 
 ```rust
-// Loose mode — runtime-known command id. The response type must be
-// pinned so `execute_command` knows what to deserialize into; easiest
-// to pin via the `let` binding's ascription.
-let sum: CalcRes = root
-    .execute_command("calc.add", CalcReq { a: 5.0, b: 3.0 })
-    .await?;
-println!("5 + 3 = {}", sum.result); // 8
-
 // Strict mode — compile-time type identity. The `#[command_service]`
 // macro generates a `calc_service::Add` (and `Multiply`) struct you
 // can reach without constructing a service instance. The request and
-// response types are pinned by the `Command` impl on `Multiply`, so
-// no type ascription is needed on the `let` — `product` is inferred
-// as `CalcRes`.
+// response types are pinned by the `Command` impl, so no type
+// ascription is needed on the `let`.
+let sum = root
+    .execute::<calc_service::Add>(CalcReq { a: 5.0, b: 3.0 })
+    .await?;
+println!("5 + 3 = {}", sum.result); // 8
+
 let product = root
     .execute::<calc_service::Multiply>(CalcReq { a: 4.0, b: 7.0 })
     .await?;
 println!("4 × 7 = {}", product.result); // 28
 
-// Local private command — served on the root, never escalated.
-root.execute_command::<_, serde_json::Value>(
+// Loose mode — runtime-known command id. Raw JSON in, raw JSON out.
+// Use this for plugins, FFI, scripting hosts, or anywhere the id
+// only becomes known at runtime.
+root.execute_dyn(
     "_main.log",
     serde_json::json!({ "level": "info", "message": "Calculations complete!" }),
 ).await?;
 ```
 
-Strict mode (`execute::<calc_service::Add>(..)`) and loose mode (`execute_command("calc.add", ..)`) cover both ends of the typing spectrum. See [Type Safety](/cmd-ipc/getting-started/rust/type-safety/) for the tradeoffs and when to reach for each.
+Strict mode (`execute::<calc_service::Add>(..)`) and loose mode (`execute_dyn("calc.add", ..)`) cover both ends of the typing spectrum. See [Type Safety](/cmd-ipc/getting-started/rust/type-safety/) for the tradeoffs and when to reach for each.
 
 ## Step 5: Emit and Listen for Events
 
@@ -171,12 +169,9 @@ Events are fire-and-forget broadcasts — no response, no routing escalation, ju
 ```rust
 // src/calc_service.rs (or wherever your shared types live)
 use coralstack_cmd_ipc::prelude::*;
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
 
 /// Worker finished initializing.
 #[event("worker.ready")]
-#[derive(Deserialize, Serialize, JsonSchema)]
 pub struct WorkerReady {
     pub worker_id: String,
     pub command_count: u32,

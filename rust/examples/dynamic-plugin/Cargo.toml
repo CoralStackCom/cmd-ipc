@@ -1,5 +1,5 @@
 [package]
-name = "multi-service"
+name = "dynamic-plugin"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,13 +7,13 @@ license.workspace = true
 publish = false
 
 [[bin]]
-name = "multi-service"
+name = "dynamic-plugin"
 path = "src/main.rs"
 
 [dependencies]
 coralstack-cmd-ipc = { path = "../../crates/cmd-ipc" }
-# serde_json is needed at the use site for raw JSON manipulation in the
-# REPL. serde / schemars come transitively through `coralstack-cmd-ipc`'s
-# re-exports and are reached via the prelude / `#[payload]` macro.
+# serde_json is reached at the use site for building raw JSON payloads
+# that mimic what a plugin runtime would emit at runtime.
 serde_json = { workspace = true }
 futures = { workspace = true, features = ["executor", "thread-pool"] }
+parking_lot = { workspace = true }

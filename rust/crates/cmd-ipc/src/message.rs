@@ -32,12 +32,62 @@ pub struct CommandDef {
 }
 
 /// A request/response JSON-Schema pair attached to a [`CommandDef`].
+///
+/// Both slots are optional; absent means "no payload expected" (the
+/// TypeScript equivalent is `v.void()`). When populated the value is a
+/// raw JSON Schema; the registry normalizes incoming schemas so wire
+/// representations remain language-agnostic.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct CommandSchema {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response: Option<Value>,
+}
+
+impl CommandSchema {
+    /// Empty schema — both slots unset. Equivalent to advertising a
+    /// command with `request: None, response: None` (the void/void
+    /// shape). Use when the command takes no payload and returns none.
+    pub fn empty() -> Self {
+        Self {
+            request: None,
+            response: None,
+        }
+    }
+
+    /// Maximally permissive schema — both request and response declared
+    /// as open objects with `additionalProperties: true`. Useful for
+    /// runtime plugins whose payload shape isn't known at advertise
+    /// time (e.g. Flow's QuickJS `SourceChannel` when a plugin exports
+    /// an `any → any` function).
+    ///
+    /// Prefer a real schema when you can produce one — consumers use it
+    /// for validation, MCP tool schemas, and generated TS clients.
+    pub fn permissive() -> Self {
+        Self {
+            request: Some(serde_json::json!({
+                "type": "object",
+                "additionalProperties": true,
+            })),
+            response: Some(serde_json::json!({
+                "type": "object",
+                "additionalProperties": true,
+            })),
+        }
+    }
+
+    /// Builder: set only the request schema (leaves response unset).
+    pub fn with_request(mut self, schema: Value) -> Self {
+        self.request = Some(schema);
+        self
+    }
+
+    /// Builder: set only the response schema (leaves request unset).
+    pub fn with_response(mut self, schema: Value) -> Self {
+        self.response = Some(schema);
+        self
+    }
 }
 
 /// Body of an execute-command error response.

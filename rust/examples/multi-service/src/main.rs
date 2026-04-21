@@ -191,7 +191,7 @@ fn do_call(root: &CommandRegistry) -> Result<(), String> {
         format!("call {} payload={}", def.id, ui::pretty(&request)),
     );
     let start = Instant::now();
-    let result: Result<Value, _> = block_on(root.execute_command(&def.id, request.clone()));
+    let result: Result<Value, _> = block_on(root.execute_dyn(&def.id, request.clone()));
     let elapsed = start.elapsed();
     match result {
         Ok(v) => {

@@ -155,6 +155,38 @@ fn emit_command_impl(
     call_expr: TokenStream,
 ) -> TokenStream {
     let cmd_ipc = cmd_ipc_path();
+
+    // Void request / response (`()` in the signature) → no schema slot
+    // advertised. This keeps the wire `CommandSchema` consistent with
+    // the spec: `request` and `response` are both optional, and absence
+    // means "no payload expected".
+    let request_schema = if is_unit_type(request_ty) {
+        quote! { ::core::option::Option::None }
+    } else {
+        quote! {
+            ::core::option::Option::Some(
+                #cmd_ipc::normalize_schema(
+                    #cmd_ipc::serde_json::to_value(
+                        #cmd_ipc::schemars::schema_for!(#request_ty)
+                    ).expect("request schema should serialize"),
+                ),
+            )
+        }
+    };
+    let response_schema = if is_unit_type(response_ty) {
+        quote! { ::core::option::Option::None }
+    } else {
+        quote! {
+            ::core::option::Option::Some(
+                #cmd_ipc::normalize_schema(
+                    #cmd_ipc::serde_json::to_value(
+                        #cmd_ipc::schemars::schema_for!(#response_ty)
+                    ).expect("response schema should serialize"),
+                ),
+            )
+        }
+    };
+
     quote! {
         impl #cmd_ipc::Command for #struct_ident {
             const ID: &'static str = #id_lit;
@@ -173,23 +205,22 @@ fn emit_command_impl(
 
             fn schema(&self) -> ::core::option::Option<#cmd_ipc::CommandSchema> {
                 ::core::option::Option::Some(#cmd_ipc::CommandSchema {
-                    request: ::core::option::Option::Some(
-                        #cmd_ipc::normalize_schema(
-                            #cmd_ipc::serde_json::to_value(
-                                #cmd_ipc::schemars::schema_for!(#request_ty)
-                            ).expect("request schema should serialize"),
-                        ),
-                    ),
-                    response: ::core::option::Option::Some(
-                        #cmd_ipc::normalize_schema(
-                            #cmd_ipc::serde_json::to_value(
-                                #cmd_ipc::schemars::schema_for!(#response_ty)
-                            ).expect("response schema should serialize"),
-                        ),
-                    ),
+                    request: #request_schema,
+                    response: #response_schema,
                 })
             }
         }
+    }
+}
+
+/// Detect `()` (the unit type) so the generated `schema()` omits the
+/// corresponding slot. Uses token comparison, which catches the common
+/// `()` form; exotic spellings like `<()>` are treated as non-unit,
+/// which is fine — the resulting schema is just noisier.
+fn is_unit_type(ty: &Type) -> bool {
+    match ty {
+        Type::Tuple(t) => t.elems.is_empty(),
+        _ => false,
     }
 }
 

@@ -14,18 +14,16 @@ use coralstack_cmd_ipc::prelude::*;
 use coralstack_cmd_ipc::Config;
 use futures::executor::{block_on, ThreadPool};
 use futures::task::SpawnExt;
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
 
 // ---------- service under test (impl-block shape) ----------
 
-#[derive(Deserialize, Serialize, JsonSchema)]
+#[payload]
 struct AddReq {
     a: i64,
     b: i64,
 }
 
-#[derive(Deserialize, Serialize, JsonSchema)]
+#[payload]
 struct SubReq {
     a: i64,
     b: i64,
@@ -106,14 +104,14 @@ fn impl_block_macro_registers_and_executes_across_channel() {
 
         // Root calls add — routes to worker.
         let sum: i64 = reg_a
-            .execute_command("math.add", AddReq { a: 2, b: 3 })
+            .execute::<math_service::Add>(AddReq { a: 2, b: 3 })
             .await
             .unwrap();
         assert_eq!(sum, 5);
 
         // And sub.
         let diff: i64 = reg_a
-            .execute_command("math.sub", SubReq { a: 10, b: 4 })
+            .execute::<math_service::Sub>(SubReq { a: 10, b: 4 })
             .await
             .unwrap();
         assert_eq!(diff, 6);
@@ -147,7 +145,6 @@ fn strict_execute_via_nested_module_path() {
 
 /// Worker has finished initializing.
 #[event("worker.ready")]
-#[derive(Deserialize, Serialize, JsonSchema)]
 struct WorkerReady {
     worker_id: String,
     command_count: u32,
@@ -202,7 +199,7 @@ fn free_fn_macro_registers_via_factory() {
         register_greet(&reg_a).await.unwrap();
 
         let hello: String = reg_a
-            .execute_command("greet", "world".to_string())
+            .execute::<GreetCommand>("world".to_string())
             .await
             .unwrap();
         assert_eq!(hello, "hello, world");
@@ -222,13 +219,13 @@ fn private_command_stays_local() {
 
         // Root cannot see the private command.
         let err = reg_a
-            .execute_command::<_, String>("_internal.ping", ())
+            .execute_dyn("_internal.ping", serde_json::Value::Null)
             .await
             .unwrap_err();
         assert!(matches!(err, CommandError::NotFound(_)));
 
         // But the worker itself can still call it locally.
-        let got: String = reg_b.execute_command("_internal.ping", ()).await.unwrap();
+        let got: String = reg_b.execute::<math_service::Ping>(()).await.unwrap();
         assert_eq!(got, "pong");
     });
 }

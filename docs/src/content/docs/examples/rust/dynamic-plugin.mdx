@@ -1,0 +1,117 @@
+---
+title: Dynamic Plugin
+description: Custom CommandChannel that advertises runtime-built commands and cleans up on unload
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+The template for plugin hosts: a custom `CommandChannel` that advertises its commands at runtime, dispatches `execute.command.request` messages into an isolated handler map, and cleans up every command it owns when the channel closes.
+
+Typical use cases: a scripting runtime (QuickJS, Lua, WASM) where each loaded plugin exports a handful of functions, an FFI bridge that surfaces shared-library entry points as commands, or any host that needs to hot-reload a set of commands as a group.
+
+The example in `rust/examples/dynamic-plugin/` uses a plain `HashMap<String, Fn>` in place of a real sandbox so it's runnable without a scripting runtime dependency.
+
+## Run
+
+```bash
+make rs-start-example dynamic-plugin
+# or
+cargo run -p dynamic-plugin
+```
+
+## What the example proves
+
+1. **Dynamic command advertisement.** `PluginChannel::start()` sends one `register.command.request` per exported function. The `CommandSchema` is built at runtime — no compile-time types.
+2. **Runtime dispatch.** `execute.command.request` messages are routed into the sandbox handler map and responded to with `execute.command.response` on the channel's outbound side.
+3. **Automatic cleanup on unload.** `plugin.close().await` causes the registry's driver loop to observe EOF and run its channel-close cleanup, removing every command owned by the channel. There is no `unregister_command` API — close the channel and the commands are gone.
+4. **Loose-mode invocation.** `registry.execute_dyn(id, json!({..}))` is the natural call path for runtime commands.
+5. **Permissive schemas.** `CommandSchema::permissive()` is the realistic fallback when an exported function's signature is `any → any`. `CommandSchema::empty().with_request(..).with_response(..)` is the builder for partial schemas.
+
+## Expected output
+
+```
+─── advertising plugin commands ──────────────────────────────
+  plugin.echo — Echo the request payload back, wrapped
+  plugin.greet — Greet someone by name
+
+─── calling plugin commands via execute_dyn ──────────────────
+  plugin.greet {name:"Ada"}   => {"greeting":"hello, Ada"}
+  plugin.echo  {x:1, y:[…]}     => {"you_sent":{"x":1,"y":[true,false]}}
+  plugin.echo  null               => err: invalid request for command plugin.echo: expected a non-null payload
+
+─── closing the plugin channel (unloads the plugin) ──────────
+  commands visible to root after close:
+    (none — cleanup worked)
+
+─── attempting to call a command after close ─────────────────
+  plugin.greet => err: command not found: plugin.greet
+```
+
+## Key pieces
+
+### `PluginChannel::start` — advertise commands
+
+```rust
+fn start(&self) -> BoxFuture<'_, Result<(), ChannelError>> {
+    async move {
+        for (_, (def, _)) in self.sandbox.commands.iter() {
+            self.outbound_tx
+                .unbounded_send(Message::RegisterCommandRequest {
+                    id: MessageId::new_v4(),
+                    command: def.clone(),
+                })
+                .map_err(|e| ChannelError::Send(e.to_string()))?;
+        }
+        Ok(())
+    }
+    .boxed()
+}
+```
+
+The registry's driver loop pulls those `RegisterCommandRequest`s off `recv()` and records each command as remote, owned by this channel.
+
+### `PluginChannel::send` — dispatch into the sandbox
+
+```rust
+Message::ExecuteCommandRequest { id, command_id, request } => {
+    let response = self.dispatch(command_id, request.unwrap_or(Value::Null));
+    let tx = self.outbound_tx.clone();
+    std::thread::spawn(move || {
+        let response = block_on(response);
+        let _ = tx.unbounded_send(Message::ExecuteCommandResponse {
+            id: MessageId::new_v4(),
+            thid: id,
+            response,
+        });
+    });
+}
+```
+
+Real hosts would run the sandbox on its own event loop instead of spawning a thread per call, but the shape is the same: take the request, run the handler, correlate the response via `thid`.
+
+### Cleanup on close
+
+```rust
+plugin.close().await;
+// Registry's driver loop observes EOF and runs handle_channel_close,
+// which drops every remote command owned by this channel. No manual
+// unregister required.
+assert!(registry.list_commands().is_empty());
+```
+
+## Porting to a real runtime
+
+- Replace the `HashMap<String, Fn>` sandbox with your runtime's context (a JS VM like QuickJS via `rquickjs`, a Lua state, a WASM instance, a loaded `dlopen`ed library — whatever your plugin host runs).
+- In `start()`, introspect the plugin's exports to build `CommandDef`s. Use `CommandSchema::permissive()` when the exported function's shape isn't introspectable; otherwise translate the runtime's type info into JSON Schema and pass via `.with_request(..)` / `.with_response(..)`.
+- In `dispatch()`, invoke the plugin function inside the sandbox, capture its return value (or thrown error), and map to `ExecuteResult`.
+- On `close()`, tear down the runtime context so resources are released before the channel goes away. Call `plugin.close().await` from your unload path so the runtime is gone before the caller observes the plugin as removed; the registry will then clean up the command entries on its own.
+
+<Aside type="caution">
+  Set `request_ttl` on the registry higher than the slowest plugin-side handler execution time. A response arriving after the TTL fires is silently dropped (per spec), which is easy to miss when debugging. Either raise the registry TTL or enforce a shorter timeout on the plugin side.
+</Aside>
+
+## See also
+
+- [`CommandChannel` trait](/cmd-ipc/api/rust/#commandchannel-trait) — the four-method interface every custom channel implements.
+- [`DynCommand` / `BoxedDynCommand`](/cmd-ipc/api/rust/#runtime-constructed-commands-dyncommand) — the registration-side counterpart for in-process runtime commands (no custom channel needed).
+- [InMemoryChannel](/cmd-ipc/getting-started/rust/channels/in-memory-channel/) — the simplest custom-channel shape.

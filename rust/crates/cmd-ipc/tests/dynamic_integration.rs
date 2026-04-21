@@ -1,8 +1,8 @@
 //! End-to-end tests for runtime-constructed commands via [`DynCommand`].
 //!
 //! These tests exercise the handler-as-closure path used by scripting
-//! runtimes and FFI bridges. The `#[commands]` macro path is covered
-//! by `macro_integration.rs`.
+//! runtimes and FFI bridges. The `#[command_service]` macro path is covered
+//! by `macro_integration.rs` (the `#[command_service]` macro path).
 //!
 //! The registry has no explicit `unregister` API: per the TypeScript
 //! reference implementation, channel close is the mechanism for
@@ -73,11 +73,11 @@ fn register_command_executes_locally() {
         .description("Double the input integer");
         reg.register_command(cmd).await.unwrap();
 
-        let got: i64 = reg
-            .execute_command("math.double", json!({ "n": 21 }))
+        let got = reg
+            .execute_dyn("math.double", json!({ "n": 21 }))
             .await
             .unwrap();
-        assert_eq!(got, 42);
+        assert_eq!(got, json!(42));
     });
 }
 
@@ -94,7 +94,7 @@ fn register_command_propagates_across_channel() {
             .unwrap();
 
         let got: Value = reg_a
-            .execute_command("work.echo", json!({ "hello": "world" }))
+            .execute_dyn("work.echo", json!({ "hello": "world" }))
             .await
             .unwrap();
         assert_eq!(got, json!({ "hello": "world" }));
@@ -150,15 +150,15 @@ fn register_command_private_prefix_stays_local() {
             .unwrap();
 
         // Worker can call it locally.
-        let got: String = reg_b
-            .execute_command("_secret.ping", Value::Null)
+        let got = reg_b
+            .execute_dyn("_secret.ping", Value::Null)
             .await
             .unwrap();
-        assert_eq!(got, "pong");
+        assert_eq!(got, json!("pong"));
 
         // Root cannot see it (never escalated).
         let err = reg_a
-            .execute_command::<_, String>("_secret.ping", Value::Null)
+            .execute_dyn("_secret.ping", Value::Null)
             .await
             .unwrap_err();
         assert!(matches!(err, CommandError::NotFound(_)));
@@ -185,11 +185,8 @@ fn channel_close_removes_its_commands() {
             .unwrap();
 
         // Root sees it as a remote command.
-        let got: String = reg_a
-            .execute_command("work.ping", Value::Null)
-            .await
-            .unwrap();
-        assert_eq!(got, "pong");
+        let got = reg_a.execute_dyn("work.ping", Value::Null).await.unwrap();
+        assert_eq!(got, json!("pong"));
         assert!(reg_a.list_commands().iter().any(|d| d.id == "work.ping"));
 
         // Close the worker side of the channel. Both registries see the
@@ -218,7 +215,7 @@ fn channel_close_removes_its_commands() {
         );
 
         let err = reg_a
-            .execute_command::<_, String>("work.ping", Value::Null)
+            .execute_dyn("work.ping", Value::Null)
             .await
             .unwrap_err();
         assert!(matches!(err, CommandError::NotFound(_)));

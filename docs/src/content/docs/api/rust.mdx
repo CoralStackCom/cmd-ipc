@@ -10,11 +10,11 @@ Reference for the Rust crates. Full rustdoc with all generics, trait bounds, and
 | Crate | docs.rs | crates.io | Purpose |
 |---|---|---|---|
 | `coralstack-cmd-ipc` | [docs.rs](https://docs.rs/coralstack-cmd-ipc) | [crates.io](https://crates.io/crates/coralstack-cmd-ipc) | Core registry, channels, protocol |
-| `coralstack-cmd-ipc-macros` | [docs.rs](https://docs.rs/coralstack-cmd-ipc-macros) | [crates.io](https://crates.io/crates/coralstack-cmd-ipc-macros) | `#[command]` / `#[command_service]` attribute macros |
+| `coralstack-cmd-ipc-macros` | [docs.rs](https://docs.rs/coralstack-cmd-ipc-macros) | [crates.io](https://crates.io/crates/coralstack-cmd-ipc-macros) | `#[command]` / `#[command_service]` / `#[event]` / `#[payload]` attribute macros |
 | `coralstack-cmd-ipc-mcp` | [docs.rs](https://docs.rs/coralstack-cmd-ipc-mcp) | [crates.io](https://crates.io/crates/coralstack-cmd-ipc-mcp) | MCP server adapter (via `rmcp`) |
 
 <Aside type="tip">
-  The core crate re-exports `coralstack-cmd-ipc-macros`, so listing just `coralstack-cmd-ipc` as a dependency is enough — you get the macros, prelude, and runtime in one.
+  The core crate re-exports `coralstack-cmd-ipc-macros`, `serde`, `schemars`, and `serde_json`, so listing `coralstack-cmd-ipc` as your only dependency is enough — you get the macros, prelude, runtime, and the derive crates they expand against in one.
 </Aside>
 
 ## Prelude
@@ -23,7 +23,7 @@ Reference for the Rust crates. Full rustdoc with all generics, trait bounds, and
 use coralstack_cmd_ipc::prelude::*;
 ```
 
-Brings into scope: `command`, `command_service`, `ChannelError`, `Command`, `CommandChannel`, `CommandDef`, `CommandError`, `CommandRegistry`, `CommandSchema`, `Config`, `DynCommand`, `InMemoryChannel`.
+Brings into scope: `command`, `command_service`, `event`, `payload`, `BoxedDynCommand`, `ChannelError`, `Command`, `CommandChannel`, `CommandDef`, `CommandError`, `CommandRegistry`, `CommandSchema`, `Config`, `DynCommand`, `DynEvent`, `Event`, `InMemoryChannel`.
 
 ## CommandRegistry
 
@@ -55,20 +55,53 @@ let registry = CommandRegistry::new(Config {
 | Method | Mirrors TS | Notes |
 |---|---|---|
 | `register_command(cmd)` | `registerCommand` | Single entry point. Takes any `C: Command` — typed `#[command]`-macro structs for compile-time commands, [`DynCommand`](#command-trait) for runtime-constructed commands |
-| `register_channel(channel)` | `registerChannel` | Returns a driver future — spawn it on your executor |
-| `execute_command::<Req, Res>(id, req)` | loose `executeCommand` | Use `::<Value, Value>` for fully dynamic dispatch |
+| `register_channel(channel)` | `registerChannel` | Returns a driver future — **spawn it on your executor** |
 | `execute::<C>(req)` | strict `executeCommand<K>` | `C: Command` pins request and response types |
+| `execute_dyn(id, req: Value)` | loose `executeCommand` | Raw JSON in, raw JSON out — for runtime-known ids |
 | `emit(event)` | `emitEvent` | Single entry point. Takes any `E: Event` — typed `#[event]`-macro structs or [`DynEvent`](#event-trait) |
 | `on::<E>(cb)` | typed `addEventListener` | `E: Event + DeserializeOwned`; callback receives deserialized `E` |
 | `on_dyn(id, cb)` | dynamic `addEventListener` | Runtime id; callback receives raw `Value` |
 | `list_commands()` | `listCommands` | Returns `Vec<CommandDef>` |
 | `list_channels()` | `listChannels` | Returns connected channel IDs |
-| `dispose()` | `dispose` | Closes all channels, drops commands |
+| `dispose().await` | `dispose` | **Async** — awaits each `channel.close()` before returning |
 | `id()` | `id` property | Registry identifier |
 
 <Aside type="note">
-  Commands owned by a channel are cleaned up automatically when the channel closes. There is no `unregister_command`, matching the TS reference. For dynamic lifecycle-scoped command groups, implement a custom `CommandChannel` that advertises its commands on connect.
+  Commands owned by a channel are cleaned up automatically when the channel closes. There is no `unregister_command`, matching the TS reference. For dynamic lifecycle-scoped command groups (Flow's QuickJS plugins, any plugin host), implement a custom `CommandChannel` that advertises its commands on connect and closes itself on unload. See the [`dynamic-plugin`](/cmd-ipc/examples/rust/) example for a worked walkthrough.
 </Aside>
+
+### Driving channels
+
+`register_channel` does not spawn anything — it returns a future you own. Poll it with whatever executor you run elsewhere:
+
+```rust
+// Tokio
+let driver = registry.register_channel(channel).await?;
+tokio::spawn(driver);
+
+// futures::executor / smol / async-std — same shape, different spawner.
+```
+
+Forgetting to spawn the driver means the registry never processes incoming messages from that channel. `dispose()` will still work (it awaits each `channel.close()`), but until then the channel is silent from the registry's point of view.
+
+### request_ttl vs handler duration
+
+The registry rejects pending `execute` calls after `request_ttl` with a `Timeout` error. Late responses that arrive after expiry find no pending handler and are silently dropped (per spec). For slow handlers — long JS execution in a plugin, large HTTP fetches — raise `request_ttl` above the worst-case handler duration, or enforce a shorter timeout on the handler side.
+
+### Void commands and events
+
+Model void as `()`:
+
+```rust
+#[command("worker.reset")]
+async fn reset(&self) -> Result<(), CommandError> { /* ... */ Ok(()) }
+
+// Unit struct = void event
+#[event("worker.tick")]
+struct WorkerTick;
+```
+
+The macro detects `()` for request or response and omits that slot from the advertised schema. On the wire the registry omits the `request`, `result`, and `payload` fields entirely (rather than sending `null`), per the JSON schemas in `spec/`.
 
 ## Command trait
 
@@ -76,10 +109,8 @@ Strict-mode typing — the Rust equivalent of `CommandSchemaMap`.
 
 ```rust
 use coralstack_cmd_ipc::prelude::*;
-use schemars::{schema_for, JsonSchema};
-use serde::{Deserialize, Serialize};
 
-#[derive(Deserialize, Serialize, JsonSchema)]
+#[payload]
 struct AddReq { a: i64, b: i64 }
 
 struct Add;
@@ -97,10 +128,9 @@ impl Command for Add {
     // Optional — omit to skip schema advertising. Without a schema,
     // cross-language peers fall back to permissive validation.
     fn schema(&self) -> Option<CommandSchema> {
-        Some(CommandSchema {
-            request: Some(serde_json::to_value(schema_for!(AddReq)).unwrap()),
-            response: None,
-        })
+        Some(CommandSchema::empty().with_request(
+            serde_json::to_value(coralstack_cmd_ipc::schemars::schema_for!(AddReq)).unwrap(),
+        ))
     }
 }
 
@@ -132,34 +162,61 @@ let cmd = DynCommand::new(runtime_id, |req: AddReq| async move {
     Ok(req.a + req.b)
 })
 .description("Runtime adder")
-.schema(runtime_schema);
+.request_schema(runtime_request_schema)
+.response_schema(runtime_response_schema);
 registry.register_command(cmd).await?;
 ```
 
-`DynCommand::new` takes an id + handler. `.description(..)` and `.schema(..)` are optional builder methods.
+Builders:
+
+- `.description(..)` — human-readable description surfaced to MCP clients and `list_commands`.
+- `.schema(CommandSchema)` — attach a full request+response schema pair.
+- `.request_schema(Value)` / `.response_schema(Value)` — set one slot at a time.
+
+For a `Vec` of heterogeneous runtime commands (a plugin host holding many handlers), use [`BoxedDynCommand`](#boxeddyncommand):
+
+```rust
+use coralstack_cmd_ipc::BoxedDynCommand;
+use serde_json::json;
+
+let a: BoxedDynCommand = DynCommand::boxed("plugin.hello", |_| async { Ok(json!("hi")) });
+let b: BoxedDynCommand = DynCommand::boxed("plugin.bye",   |_| async { Ok(json!("bye")) });
+let commands: Vec<BoxedDynCommand> = vec![a, b];
+for cmd in commands {
+    registry.register_command(cmd).await?;
+}
+```
+
+`DynCommand::boxed` erases the handler's concrete closure type into `BoxedHandler`, giving every command the same static type so they can share a collection.
+
+### Permissive schemas for plugins
+
+`CommandSchema::permissive()` advertises a fully open `any → any` schema — the right default when a plugin's exported function has no introspectable types (e.g. a QuickJS `function(req) { ... }`). `CommandSchema::empty()` advertises no schema on either slot (void/void); attach real schemas via `.with_request(..)` / `.with_response(..)`.
 
 ## Event trait
 
-Typed events — the event payload struct *is* the event. Attach `#[event("id")]` to a struct that also derives `Serialize` / `Deserialize` / `JsonSchema` and it becomes a typed event usable with `emit` / `on`.
+Typed events — the event payload struct *is* the event. Attach `#[event("id")]` to a struct and it becomes a typed event usable with `emit` / `on`. The macro auto-derives `Serialize` / `Deserialize` / `JsonSchema` against the re-exports from `coralstack-cmd-ipc`, so user crates don't add those dependencies themselves.
 
 ```rust
 use coralstack_cmd_ipc::prelude::*;
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
 
 /// Worker has finished initializing.
 #[event("worker.ready")]
-#[derive(Deserialize, Serialize, JsonSchema)]
 pub struct WorkerReady {
     pub worker_id: String,
     pub command_count: u32,
 }
+
+// Void event — a unit struct emits no payload on the wire.
+#[event("worker.tick")]
+pub struct WorkerTick;
 
 // Emit — fully typed.
 registry.emit(WorkerReady {
     worker_id: "w1".into(),
     command_count: 2,
 })?;
+registry.emit(WorkerTick)?;
 
 // Listen — callback receives a deserialized `WorkerReady`.
 let _unsub = registry.on::<WorkerReady>(|event| {
@@ -209,7 +266,8 @@ Re-exported from `coralstack-cmd-ipc-macros`. See [Defining Commands](/cmd-ipc/g
 - `#[command_service]` — attribute on an `impl Host` block. Generates:
   - `Host.register(&registry).await?` — installs every tagged method.
   - A nested `pub(super) mod host_snake_case_name` containing one wrapper type per method, reachable for strict execute: `registry.execute::<host_name::MethodName>(req).await?`.
-- `#[event("id")]` — attribute on a payload struct that derives `Serialize` / `Deserialize` / `JsonSchema`. Emits an `impl Event for Struct` with id and schemars-derived schema. The struct is then usable as `registry.emit(Struct { .. })` and `registry.on::<Struct>(cb)`. Use a `///` doc comment on the struct for human-readable descriptions.
+- `#[event("id")]` — attribute on a payload struct. Auto-derives `Serialize` / `Deserialize` / `JsonSchema` **and** emits an `impl Event for Struct` with id and schemars-derived schema. The struct is then usable as `registry.emit(Struct { .. })` and `registry.on::<Struct>(cb)`. Unit structs (`struct Foo;`) produce void events (no payload on the wire).
+- `#[payload]` — attribute on any struct (typically command request/response types). Auto-derives `Serialize` / `Deserialize` / `JsonSchema` against the `serde` / `schemars` re-exports from `coralstack-cmd-ipc`, so user crates don't need to add those dependencies themselves. Additive — extra derives (`Clone`, `Debug`, …) can be stacked on top normally.
 
 ## Errors
 

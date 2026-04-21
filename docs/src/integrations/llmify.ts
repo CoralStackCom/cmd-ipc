@@ -20,7 +20,7 @@ type-safe command execution across processes, workers, and services.
 - **Flexible Architecture**: Hybrid Tree-Mesh routing with optional command escalation.
 - **Schema Generation**: CLI (TypeScript) generates client schemas from remote services.
 - **Event Broadcasting**: Fire-and-forget events across all connected channels.
-- **Ergonomic Registration**: @Command decorator (TS) or #[command] / #[commands] macros (Rust).
+- **Ergonomic Registration**: @Command decorator (TS) or #[command] / #[command_service] macros (Rust).
 
 ## Documentation Sitemap
 
