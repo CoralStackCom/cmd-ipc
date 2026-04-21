@@ -1,16 +1,13 @@
 {
   "compilerOptions": {
-    "outDir": "dist",
-    "declaration": true,
-    "declarationMap": true,
     "module": "NodeNext",
-    "target": "ESNext",
-    "skipLibCheck": true,
-    "esModuleInterop": true,
-    "strict": true,
-    "sourceMap": true,
     "moduleResolution": "NodeNext",
+    "target": "ESNext",
     "resolveJsonModule": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "noEmit": true,
     "experimentalDecorators": true,
     "emitDecoratorMetadata": true,
     "types": ["vitest/globals", "node"]
