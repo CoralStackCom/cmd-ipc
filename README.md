@@ -114,6 +114,7 @@ See the [Quick Start Guide](https://coralstack.com/cmd-ipc/getting-started/quick
 | Example | Description | Run |
 | --- | --- | --- |
 | [`multi-service`](./rust/examples/multi-service) | Two registries wired by an in-memory channel with a REPL that routes commands across them and fans out events | `make rs-start-example multi-service` |
+| [`dynamic-plugin`](./rust/examples/dynamic-plugin) | Plugin-host channel that advertises commands at runtime and auto-cleans them up when the channel closes | `make rs-start-example dynamic-plugin` |
 
 ## Development
 
