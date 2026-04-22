@@ -1,0 +1,11 @@
+{
+  "description": "event with payload round-trips",
+  "schema": "event.json",
+  "message": {
+    "id": "55555555-5555-4555-8555-555555555555",
+    "type": "event",
+    "eventId": "user.updated",
+    "payload": { "userId": 42, "name": "Ada" }
+  },
+  "json": "{\"id\":\"55555555-5555-4555-8555-555555555555\",\"type\":\"event\",\"eventId\":\"user.updated\",\"payload\":{\"userId\":42,\"name\":\"Ada\"}}"
+}

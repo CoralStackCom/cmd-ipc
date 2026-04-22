@@ -1,0 +1,247 @@
+---
+title: Type Safety
+description: Leveraging cmd-ipc's type system in TypeScript with Valibot schemas
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+cmd-ipc provides full TypeScript type safety through <a href="https://valibot.dev/" target="_blank" rel="noopener">Valibot</a> schemas — compile-time type checking plus runtime validation.
+
+## Loose vs Strict Mode
+
+cmd-ipc operates in two modes depending on whether you provide schemas.
+
+### Loose Mode
+
+Without schemas, any command or event ID is accepted:
+
+```typescript
+const registry = new CommandRegistry({ id: 'main' })
+
+// No type checking - any command ID and payload accepted
+await registry.executeCommand('anything', { any: 'payload' })
+registry.emitEvent('any.event', { data: 123 })
+```
+
+<Aside type="caution">
+  Loose mode disables compile-time type checking. Use it only when you don't know the command schema ahead of time.
+</Aside>
+
+### Strict Mode
+
+With schemas, you get full type checking — only commands and events defined in the schemas are allowed:
+
+```typescript
+const registry = new CommandRegistry({
+  id: 'main',
+  schemas: {
+    commands: CommandSchema,
+    events: EventSchema,
+  },
+})
+
+// TypeScript enforces correct types
+await registry.executeCommand('user.create', { name: 'John', email: 'j@x.com' })
+await registry.executeCommand('unknown.cmd', {})  // TypeScript error!
+
+registry.emitEvent('user.created', { id: '123', name: 'John' })
+registry.emitEvent('unknown.event', {})  // TypeScript error!
+```
+
+### Mixed Mode
+
+You can use strict mode for one schema type while keeping the other loose. For example, to have strict commands but loose events:
+
+```typescript
+const registry = new CommandRegistry({
+  id: 'main',
+  schemas: {
+    commands: CommandSchema,
+    // events not provided - loose mode for events
+  },
+})
+
+// Commands are strictly typed
+await registry.executeCommand('user.create', { name: 'John', email: 'j@x.com' })
+
+// Events accept any ID and payload
+registry.emitEvent('any.event', { data: 123 })
+```
+
+## Schemas
+
+### Command Schemas
+
+Define your commands with Valibot schemas:
+
+```typescript
+import * as v from 'valibot'
+import type { CommandSchemaMap } from '@coralstack/cmd-ipc'
+
+export const CommandSchema = {
+  'user.create': {
+    description: 'Creates a new user',
+    request: v.object({
+      name: v.string(),
+      email: v.pipe(v.string(), v.email()),
+    }),
+    response: v.object({
+      id: v.string(),
+      name: v.string(),
+      email: v.string(),
+      createdAt: v.date(),
+    }),
+  },
+  'user.delete': {
+    description: 'Deletes a user by ID',
+    request: v.object({
+      id: v.string(),
+    }),
+    response: v.object({
+      success: v.boolean(),
+    }),
+  },
+} as const satisfies CommandSchemaMap
+```
+
+<Aside type="tip">
+  Use `as const satisfies CommandSchemaMap` to get literal types for command IDs while ensuring the structure matches the expected interface.
+</Aside>
+
+### Event Schemas
+
+Events can also have schemas:
+
+```typescript
+import type { EventSchemaMap } from '@coralstack/cmd-ipc'
+
+export const EventSchema = {
+  'user.created': v.object({
+    id: v.string(),
+    name: v.string(),
+  }),
+  'user.deleted': v.object({
+    id: v.string(),
+  }),
+} as const satisfies EventSchemaMap
+```
+
+### Merging Schemas
+
+Combine schemas from multiple sources using the spread operator:
+
+```typescript
+import { LocalCommandSchema } from './local-commands'
+import { RemoteCommandSchema } from './generated/remote-commands'
+
+// Merge schemas
+const MergedSchema = {
+  ...LocalCommandSchema,
+  ...RemoteCommandSchema,
+} as const
+
+const registry = new CommandRegistry({
+  id: 'main',
+  schemas: { commands: MergedSchema },
+})
+```
+
+This is particularly useful when working with the [CLI](/cmd-ipc/getting-started/typescript/cli/) to generate schemas from remote services, then merging them with your local schemas.
+
+<Aside>
+  For more information on creating and designing Valibot schemas, see the <a href="https://valibot.dev/guides/" target="_blank" rel="noopener">Valibot documentation</a>.
+</Aside>
+
+## Type-Safe IDs with defineIds
+
+Use the `defineIds` helper to create type-safe constants for command and event IDs. This ensures consistency throughout your codebase and catches renaming errors at compile time rather than runtime.
+
+The helper converts schema keys to uppercase constants:
+- Dots (`.`) are converted to underscores (`_`)
+- Letters are uppercased
+- Private IDs starting with `_` retain the leading underscore
+
+```typescript
+import { defineIds } from '@coralstack/cmd-ipc'
+
+// From command schema
+export const CommandIDs = defineIds(CommandSchema)
+// CommandIDs.USER_CREATE = 'user.create'
+// CommandIDs.USER_DELETE = 'user.delete'
+// CommandIDs._INTERNAL_LOG = '_internal.log'  (private command)
+
+// From event schema
+export const EventIDs = defineIds(EventSchema)
+// EventIDs.USER_CREATED = 'user.created'
+// EventIDs.USER_DELETED = 'user.deleted'
+```
+
+Now use these constants instead of string literals:
+
+```typescript
+// Execute commands
+await registry.executeCommand(CommandIDs.USER_CREATE, { name: 'John', email: 'j@x.com' })
+
+// Register handlers
+registry.registerCommand(CommandIDs.USER_DELETE, async ({ id }) => {
+  // ...
+})
+
+// Emit and listen to events
+registry.emitEvent(EventIDs.USER_CREATED, { id: '123', name: 'John' })
+registry.onEvent(EventIDs.USER_DELETED, ({ id }) => {
+  // ...
+})
+```
+
+<Aside type="tip">
+  If you rename a command in the schema, TypeScript will show errors everywhere that constant is used, making refactoring safe.
+</Aside>
+
+## Extracting Types
+
+Create reusable type helpers to extract request and response types from your schemas. This ensures your handlers stay in sync with your schema definitions:
+
+```typescript
+import type { InferCommandSchemaMapType } from '@coralstack/cmd-ipc'
+
+// Infer all command types
+type Commands = InferCommandSchemaMapType<typeof CommandSchema>
+
+// Create helper types for handlers
+export type CommandRequest<K extends keyof Commands> = Commands[K]['request']
+export type CommandResponse<K extends keyof Commands> = Promise<Commands[K]['response']>
+```
+
+### Using with Handlers
+
+Use the type helpers in your command handlers to ensure they match the schema:
+
+```typescript
+import { Command } from '@coralstack/cmd-ipc'
+import type { CommandRequest, CommandResponse } from './schemas'
+import { CommandIDs } from './schemas'
+
+class UserService {
+  @Command(CommandIDs.USER_CREATE)
+  async create(
+    request: CommandRequest<typeof CommandIDs.USER_CREATE>
+  ): CommandResponse<typeof CommandIDs.USER_CREATE> {
+    return {
+      id: '123',
+      name: request.name,
+      email: request.email,
+      createdAt: new Date(),
+    }
+  }
+}
+```
+
+## Best Practices
+
+1. **Always use schemas** — Type safety is the main benefit of cmd-ipc.
+2. **Use `defineIds`** — Prevents typos and makes refactoring safe.
+3. **Use `satisfies`** — Ensures schema structure is correct while preserving literal types.
+4. **Extract types** — Create `CommandRequest`/`CommandResponse` helpers for handlers.
+5. **Generate from remote** — Use the [CLI](/cmd-ipc/getting-started/typescript/cli/) to generate schemas from remote services.
+6. **Share schemas** — Import from a common package in monorepos.

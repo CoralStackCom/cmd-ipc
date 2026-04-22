@@ -1,0 +1,63 @@
+---
+title: Channels Overview
+description: The ICommandChannel interface and built-in channels for TypeScript
+---
+
+import { CardGrid, LinkCard, Aside } from '@astrojs/starlight/components';
+
+This page covers TypeScript-specific channel details. For the general concept of what a channel is, see [Channels](/cmd-ipc/getting-started/channels/).
+
+## Built-in channels
+
+<CardGrid>
+  <LinkCard
+    title="MessagePortChannel"
+    description="Web Workers, Node.js worker_threads, and MessageChannel communication."
+    href="/cmd-ipc/getting-started/typescript/channels/message-port-channel/"
+  />
+  <LinkCard
+    title="HTTPChannel"
+    description="HTTP-based communication with NDJSON streaming for REST APIs and edge functions."
+    href="/cmd-ipc/getting-started/typescript/channels/http-channel/"
+  />
+  <LinkCard
+    title="MCPChannel"
+    description="Model Context Protocol integration — expose commands as AI agent tools or consume remote MCP servers."
+    href="/cmd-ipc/getting-started/typescript/channels/mcp-channel/"
+  />
+</CardGrid>
+
+## The `ICommandChannel` interface
+
+All channels implement `ICommandChannel`. Create custom transports (WebSocket, gRPC, etc.) by implementing this interface:
+
+```typescript
+interface ICommandChannel {
+  readonly id: string
+  start(): Promise<void>
+  close(): Promise<void>
+  sendMessage(message: unknown): void
+  on(event: 'message', listener: (message: unknown) => void): void
+  on(event: 'close', listener: () => void): void
+}
+```
+
+| Method | Description |
+|--------|-------------|
+| `id` | Unique identifier for this channel |
+| `start()` | Initialize the channel (called automatically by the registry) |
+| `close()` | Close the channel and clean up resources |
+| `sendMessage()` | Send a message through the channel |
+| `on('message')` | Subscribe to incoming messages |
+| `on('close')` | Subscribe to channel close events |
+
+<Aside type="tip">
+  Messages must follow the [Protocol](/cmd-ipc/introduction/protocol/) format. The registry handles correlation via `id` / `thid` — your channel just serializes and transports the messages.
+</Aside>
+
+## Registering channels
+
+```typescript
+const channel = new MessagePortChannel('worker', workerPort)
+await registry.registerChannel(channel)
+```

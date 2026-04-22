@@ -1,0 +1,61 @@
+{
+  "description": "When a peer owns a command and returns ok:false with a specific error code, the caller's local executeCommand MUST reject with a matching error whose code preserves the wire-level identifier (not collapsed to a generic error).",
+  "setup": {
+    "registry": { "id": "main" },
+    "peers": [{ "channelId": "worker-1" }]
+  },
+  "steps": [
+    {
+      "direction": "inbound",
+      "from": "worker-1",
+      "message": {
+        "id": "11111111-1111-4111-8111-111111111111",
+        "type": "register.command.request",
+        "command": { "id": "math.div" }
+      }
+    },
+    {
+      "direction": "outbound",
+      "to": "worker-1",
+      "expected": {
+        "type": "register.command.response",
+        "thid": "11111111-1111-4111-8111-111111111111",
+        "response": { "ok": true }
+      }
+    },
+    {
+      "direction": "local-call",
+      "trigger": { "executeCommand": ["math.div", { "a": 1, "b": 0 }] }
+    },
+    {
+      "direction": "outbound",
+      "to": "worker-1",
+      "expected": {
+        "id": { "$capture": "execId" },
+        "type": "execute.command.request",
+        "commandId": "math.div",
+        "request": { "a": 1, "b": 0 }
+      }
+    },
+    {
+      "direction": "inbound",
+      "from": "worker-1",
+      "message": {
+        "id": "22222222-2222-4222-8222-222222222222",
+        "type": "execute.command.response",
+        "thid": { "$ref": "execId" },
+        "response": {
+          "ok": false,
+          "error": { "code": "internal_error", "message": "divide by zero" }
+        }
+      }
+    },
+    {
+      "direction": "local-result",
+      "expectedError": {
+        "code": "internal_error",
+        "message": { "$match": "any-string" }
+      }
+    }
+  ]
+}

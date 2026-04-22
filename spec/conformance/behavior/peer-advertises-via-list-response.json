@@ -1,0 +1,44 @@
+{
+  "description": "When a peer sends list.commands.response, the registry MUST record each entry as a remote command owned by that channel. A subsequent local executeCommand for any advertised id MUST route to that peer.",
+  "setup": {
+    "registry": { "id": "main" },
+    "peers": [{ "channelId": "worker-1" }]
+  },
+  "steps": [
+    {
+      "direction": "inbound",
+      "from": "worker-1",
+      "message": {
+        "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "type": "list.commands.response",
+        "thid": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        "commands": [{ "id": "math.add" }]
+      }
+    },
+    {
+      "direction": "local-call",
+      "trigger": { "executeCommand": ["math.add", { "a": 2, "b": 3 }] }
+    },
+    {
+      "direction": "outbound",
+      "to": "worker-1",
+      "expected": {
+        "id": { "$capture": "execId" },
+        "type": "execute.command.request",
+        "commandId": "math.add",
+        "request": { "a": 2, "b": 3 }
+      }
+    },
+    {
+      "direction": "inbound",
+      "from": "worker-1",
+      "message": {
+        "id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+        "type": "execute.command.response",
+        "thid": { "$ref": "execId" },
+        "response": { "ok": true, "result": 5 }
+      }
+    },
+    { "direction": "local-result", "expected": 5 }
+  ]
+}

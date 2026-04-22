@@ -1,0 +1,254 @@
+---
+title: Type Safety
+description: Compile-time and runtime type checking in the Rust implementation
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+The Rust implementation is **strict by default** — both command request/response types and event payload types *are* the schema. For runtime-known ids (plugin hosts, FFI, scripting runtimes) there's an explicit loose-mode entry point: `execute_dyn(id, serde_json::Value)` on the call side, `DynCommand` / `DynEvent` on the registration side. The strict and loose paths share one registry.
+
+## Commands
+
+### Strict mode: `execute::<C>()`
+
+Every command has a compile-time identity via the `Command` trait. The `#[command]` / `#[command_service]` macros generate this impl automatically, but it looks like this under the hood:
+
+```rust
+use coralstack_cmd_ipc::prelude::*;
+
+struct MathAdd;
+
+impl Command for MathAdd {
+    const ID: &'static str = "math.add";
+    type Request = AddReq;   // Deserialize + JsonSchema
+    type Response = i64;     // Serialize
+
+    async fn handle(&self, req: AddReq) -> Result<i64, CommandError> {
+        Ok(req.a + req.b)
+    }
+}
+
+registry.register_command(MathAdd).await?;
+
+// Strict call — request and response types checked at compile time.
+// Equivalent to TypeScript's executeCommand<K>.
+let sum: i64 = registry.execute::<MathAdd>(AddReq { a: 1, b: 2 }).await?;
+```
+
+The compiler rejects mismatches at the call site: wrong request type, wrong response type, or an unknown command all fail to build.
+
+### Strict execute for `#[command_service]` methods
+
+When commands come from a `#[command_service]` impl block, the macro generates a nested module named after the host (snake_case) containing one wrapper struct per method. Reach them via `host_module::MethodName`:
+
+```rust
+#[command_service]
+impl MathService {
+    #[command("math.add")]
+    async fn add(&self, req: AddReq) -> Result<i64, CommandError> { ... }
+
+    #[command("math.sub")]
+    async fn sub(&self, req: SubReq) -> Result<i64, CommandError> { ... }
+}
+
+MathService.register(&registry).await?;
+
+// Strict calls — one per method, fully typed.
+let sum:  i64 = registry.execute::<math_service::Add>(AddReq { a: 2, b: 3 }).await?;
+let diff: i64 = registry.execute::<math_service::Sub>(SubReq { a: 10, b: 4 }).await?;
+```
+
+No service instance required — `math_service::Add` is just a type path. The generated structs inherit `pub(super)` visibility, so private request/response types in the parent module stay private without forcing `pub`; users who want to reach the command types from another module can `pub use self::math_service::*;` to re-export.
+
+### Loose mode: `execute_dyn(id, value)`
+
+For runtime-known command IDs (scripting runtimes, FFI, generic tooling), use `execute_dyn`. It takes raw `serde_json::Value`s on both sides — no turbofish, no type gymnastics:
+
+```rust
+use serde_json::{json, Value};
+
+let payload: Value = json!({ "a": 1, "b": 2 });
+let result: Value = registry.execute_dyn("math.add", payload).await?;
+```
+
+When the request is known at compile time but the response isn't (or vice versa), serialize the typed side yourself with `serde_json::to_value` before calling `execute_dyn`, or deserialize the returned `Value` into your type after.
+
+<Aside type="tip">
+  Prefer `execute::<C>()` wherever the command is known at compile time. Fall back to `execute_dyn(id, value)` only when you genuinely need dynamic dispatch.
+</Aside>
+
+### Runtime-constructed commands: `DynCommand`
+
+When the id, description, or schema only exists at runtime (plugin runtimes, FFI, scripting hosts), `DynCommand` lets you build a `Command` instance with owned values instead of compile-time constants. It still goes through the same `register_command` entry point — typed and runtime commands share one API.
+
+```rust
+use serde_json::{json, Value};
+
+// Fully dynamic: runtime id, `Value` payloads.
+let cmd = DynCommand::new(runtime_id, |req: Value| async move {
+    Ok(json!({ "echoed": req }))
+});
+registry.register_command(cmd).await?;
+
+// Dynamic id + typed payloads — types are inferred from the closure.
+let cmd = DynCommand::new(runtime_id, |req: AddReq| async move {
+    Ok(req.a + req.b)
+})
+.description("Runtime adder")
+.schema(command_schema);
+registry.register_command(cmd).await?;
+```
+
+For a heterogeneous collection of runtime commands (a plugin host holding many handlers), use the type-erased `BoxedDynCommand`:
+
+```rust
+use coralstack_cmd_ipc::BoxedDynCommand;
+
+let a: BoxedDynCommand = DynCommand::boxed("plugin.hello", |_| async { Ok(json!("hi")) });
+let b: BoxedDynCommand = DynCommand::boxed("plugin.bye",   |_| async { Ok(json!("bye")) });
+let commands: Vec<BoxedDynCommand> = vec![a, b];
+```
+
+`execute::<C>()` isn't meaningful for a `DynCommand` (there's no compile-time id to pin), so dispatch dynamically-registered commands via `execute_dyn(id, value)`.
+
+### Request / response type constraints
+
+The `Command` trait imposes minimal constraints:
+
+| Type | Bound | Reason |
+|---|---|---|
+| `C::Request` | `Deserialize + JsonSchema` | Deserialized from the wire; its schema is advertised to peers |
+| `C::Response` | `Serialize` | Serialized to the wire |
+
+Both types also need `Send + 'static` if they cross await points in the handler (i.e., pretty much always). In practice, use `#[payload]`:
+
+```rust
+#[payload]
+#[derive(Clone)]
+struct AddReq { a: i64, b: i64 }
+```
+
+`#[payload]` emits the `Serialize` / `Deserialize` / `JsonSchema` derives (against the `coralstack-cmd-ipc` re-exports). Any extra derives you need — `Clone`, `Debug`, `PartialEq` — stack on top normally.
+
+### Error types
+
+Command handlers return `Result<C::Response, CommandError>`. `CommandError` serializes to the protocol's `ExecuteError { code, message }` shape; the `ExecuteErrorCode` enum covers `NotFound`, `InvalidRequest`, `InternalError`, `Timeout`, `ChannelDisconnected`. Return variants directly from handlers — the macro wiring takes care of the conversion.
+
+```rust
+#[command("math.div")]
+async fn div(&self, req: DivReq) -> Result<f64, CommandError> {
+    if req.b == 0.0 {
+        return Err(CommandError::InvalidRequest {
+            command_id: "math.div".into(),
+            message: "division by zero".into(),
+        });
+    }
+    Ok(req.a / req.b)
+}
+```
+
+## Events
+
+Events follow the same "type *is* the schema" pattern as commands, but simpler — no handler, no routing escalation, no request/response split. The payload struct *is* the event type.
+
+### Strict mode: `emit(event)` / `on::<E>(cb)`
+
+Every event has a compile-time identity via the `Event` trait. The `#[event]` macro generates the impl automatically, but under the hood it looks like:
+
+```rust
+use coralstack_cmd_ipc::prelude::*;
+
+#[payload]
+pub struct WorkerReady {
+    pub worker_id: String,
+    pub command_count: u32,
+}
+
+impl Event for WorkerReady {
+    const ID: &'static str = "worker.ready";
+    // optional: fn schema(&self) -> Option<Value> { ... }
+}
+```
+
+With the `#[event]` macro, that collapses to a single attribute which also auto-derives the three serde traits:
+
+```rust
+/// Worker has finished initializing.
+#[event("worker.ready")]
+pub struct WorkerReady {
+    pub worker_id: String,
+    pub command_count: u32,
+}
+
+// Void event — a unit struct emits no payload on the wire.
+#[event("worker.tick")]
+pub struct WorkerTick;
+```
+
+Emit and listen are both strict — compile-time checked, no JSON juggling at the call sites:
+
+```rust
+// Emit — the payload struct *is* the event.
+registry.emit(WorkerReady {
+    worker_id: "w1".into(),
+    command_count: 2,
+})?;
+
+// Listen — callback receives a deserialized `WorkerReady`.
+let _unsub = registry.on::<WorkerReady>(|event| {
+    println!("{} ready with {}", event.worker_id, event.command_count);
+});
+```
+
+The compiler rejects mismatches: wrong payload type on emit, wrong event type in the callback, all fail to build.
+
+### Dynamic mode: `DynEvent` / `on_dyn`
+
+For event ids that only exist at runtime (plugin runtimes, FFI, scripting hosts), use `DynEvent` on the emit side and `on_dyn` on the listen side. Same `emit` entry point — `DynEvent` implements `Event` with a runtime-owned id and a `Value` payload.
+
+```rust
+use serde_json::{json, Value};
+
+registry.emit(DynEvent::new(runtime_id, json!({ "ok": true })))?;
+
+let _unsub = registry.on_dyn(runtime_id, |payload: Value| {
+    println!("got event: {payload}");
+});
+```
+
+`on::<E>()` isn't meaningful for a `DynEvent` (there's no compile-time id to pin), so dispatch dynamically-registered events via `on_dyn(id, cb)`.
+
+### Payload type constraints
+
+The `Event` trait imposes minimal constraints:
+
+| Type | Bound | Reason |
+|---|---|---|
+| Event struct | `Serialize + Send + Sync + 'static` | Serialized to the wire on `emit` |
+| Event struct (for `on::<E>`) | Additionally `DeserializeOwned` | Deserialized before delivery to the callback |
+
+In practice: `#[event]` already auto-derives the three serde traits. Stack `#[derive(Clone, Debug, …)]` on top if you need more:
+
+```rust
+#[event("worker.ready")]
+#[derive(Clone, Debug)]
+pub struct WorkerReady { ... }
+```
+
+### Private events
+
+Event IDs starting with `_` are **private**: they fire to local in-process listeners but are never broadcast across channels. Same rule as for private commands.
+
+## Schemas on the wire
+
+The registry advertises a JSON Schema for every command via the protocol's `CommandDef.schema` field, and for every `#[event]`-annotated type via `Event::schema()`. Both come from `schemars::schema_for!(T)` and are **byte-compatible** with the schemas the TypeScript side produces from Valibot — so a Rust registry connected to a Node.js peer sees identical `register.command.request` / `list.commands.response` / `event` messages.
+
+This is what makes the cross-language routing claim concrete: the schemas aren't just similar, they serialize to the same JSON.
+
+## Best practices
+
+1. **Prefer the typed entry points** — `execute::<C>()` for commands, `emit(event)` + `on::<E>(cb)` for events. Compile-time identity beats runtime strings every time.
+2. **Use `#[payload]` / `#[event]`** on every request / response / event type. They emit the schemars + serde derives against the cmd-ipc re-exports, which is what drives schema advertising to peers.
+3. **Keep types owned** (`String`, not `&str`) — handlers and event callbacks run across await points / channel boundaries.
+4. **Use the prelude** — `use coralstack_cmd_ipc::prelude::*;` pulls in `Command`, `Event`, `DynCommand`, `DynEvent`, `BoxedDynCommand`, the macros, and the common traits in one line.
+5. **Model void as `()`** for both request and response. The macros detect it and omit the schema slot; the registry omits the wire field.

@@ -5,7 +5,11 @@ description: Understanding the cmd-ipc message protocol and HTTP endpoints
 
 import { Aside } from '@astrojs/starlight/components'
 
-cmd-ipc uses a JSON-based message protocol for communication between registries. All messages are sent via channels—either directly (MessagePortChannel) or over HTTP (HTTPChannel).
+cmd-ipc uses a JSON-based message protocol for communication between registries. All messages are sent via channels—either directly (MessagePortChannel, InMemoryChannel) or over HTTP (HTTPChannel) or MCP.
+
+<Aside type="tip">
+  **Polyglot by design.** The TypeScript and Rust implementations emit byte-identical wire messages. The normative JSON Schemas live in `spec/schemas/` in the repo, and both implementations are verified against shared vectors in `spec/conformance/`.
+</Aside>
 
 ## HTTP Endpoints
 

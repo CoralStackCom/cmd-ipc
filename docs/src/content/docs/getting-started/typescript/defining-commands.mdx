@@ -1,0 +1,66 @@
+---
+title: Defining Commands
+description: Register commands in TypeScript with the @Command decorator and Valibot schemas
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+A command is an async function with an ID. The `@Command` decorator binds a class method to a command ID, and `registerCommands()` attaches every decorated method on a service instance to the registry.
+
+## The basic shape
+
+```typescript
+import { Command, CommandRegistry, registerCommands } from '@coralstack/cmd-ipc'
+
+class MathService {
+  @Command('math.add', 'Add two integers')
+  add({ a, b }: { a: number; b: number }): number {
+    return a + b
+  }
+}
+
+const registry = new CommandRegistry({ id: 'main' })
+registerCommands([new MathService()], registry)
+```
+
+<Aside type="note">
+  The `@Command` decorator requires `experimentalDecorators` and `emitDecoratorMetadata` in your `tsconfig.json`, plus a one-time `import 'reflect-metadata'` at your app entry point. See [Installation](/cmd-ipc/getting-started/installation/).
+</Aside>
+
+## Declaring the schema
+
+Commands become fully type-safe when paired with a <a href="https://valibot.dev/" target="_blank" rel="noopener">Valibot</a> schema map. The registry validates requests/responses at runtime and TypeScript infers the types at the call site.
+
+```typescript
+import * as v from 'valibot'
+import type { CommandSchemaMap } from '@coralstack/cmd-ipc'
+
+export const MathSchema = {
+  'math.add': {
+    description: 'Add two integers',
+    request: v.object({ a: v.number(), b: v.number() }),
+    response: v.number(),
+  },
+} as const satisfies CommandSchemaMap
+
+const registry = new CommandRegistry({
+  id: 'main',
+  schemas: { commands: MathSchema },
+})
+```
+
+See [Type Safety](/cmd-ipc/getting-started/typescript/type-safety/) for loose / strict / mixed modes.
+
+## Private commands
+
+Commands whose ID starts with `_` are **private** — they stay local to the registering process and are never announced to connected channels or exposed as MCP tools.
+
+```typescript
+class LocalOps {
+  @Command('_main.log', 'Internal logger')
+  log({ message }: { message: string }) {
+    console.log(message)
+  }
+}
+```
+

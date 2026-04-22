@@ -104,3 +104,7 @@ dist/
 .astro/
 # Generated llms.txt (auto-generated during build)
 docs/public/llms.txt
+
+# Rust
+/target/
+rust/target/

@@ -1,0 +1,45 @@
+{
+  "description": "Registering the same command ID from two different channels is rejected on the second registration with duplicate_command. Re-registration from the same channel is allowed (treated as a process restart).",
+  "setup": {
+    "registry": { "id": "main" },
+    "peers": [{ "channelId": "worker-1" }, { "channelId": "worker-2" }]
+  },
+  "steps": [
+    {
+      "direction": "inbound",
+      "from": "worker-1",
+      "message": {
+        "id": "11111111-1111-4111-8111-111111111111",
+        "type": "register.command.request",
+        "command": { "id": "math.add" }
+      }
+    },
+    {
+      "direction": "outbound",
+      "to": "worker-1",
+      "expected": {
+        "type": "register.command.response",
+        "thid": "11111111-1111-4111-8111-111111111111",
+        "response": { "ok": true }
+      }
+    },
+    {
+      "direction": "inbound",
+      "from": "worker-2",
+      "message": {
+        "id": "22222222-2222-4222-8222-222222222222",
+        "type": "register.command.request",
+        "command": { "id": "math.add" }
+      }
+    },
+    {
+      "direction": "outbound",
+      "to": "worker-2",
+      "expected": {
+        "type": "register.command.response",
+        "thid": "22222222-2222-4222-8222-222222222222",
+        "response": { "ok": false, "error": "duplicate_command" }
+      }
+    }
+  ]
+}

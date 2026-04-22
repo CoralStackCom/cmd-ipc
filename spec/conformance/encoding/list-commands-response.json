@@ -1,0 +1,14 @@
+{
+  "description": "list.commands.response with mixed command defs (with/without description)",
+  "schema": "list.commands.response.json",
+  "message": {
+    "id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    "type": "list.commands.response",
+    "thid": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    "commands": [
+      { "id": "math.add", "description": "Add two numbers" },
+      { "id": "user.create" }
+    ]
+  },
+  "json": "{\"id\":\"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb\",\"type\":\"list.commands.response\",\"thid\":\"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa\",\"commands\":[{\"id\":\"math.add\",\"description\":\"Add two numbers\"},{\"id\":\"user.create\"}]}"
+}

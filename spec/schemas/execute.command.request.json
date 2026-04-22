@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://coralstack.com/cmd-ipc/spec/v1/execute.command.request.json",
+  "title": "ExecuteCommandRequest",
+  "type": "object",
+  "required": ["id", "type", "commandId"],
+  "additionalProperties": false,
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "type": { "const": "execute.command.request" },
+    "commandId": { "type": "string", "minLength": 1 },
+    "request": {
+      "type": "object",
+      "description": "Command-specific request payload. Shape is defined by the target command's schema (if any).",
+      "additionalProperties": true
+    }
+  }
+}

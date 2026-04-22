@@ -1,9 +1,9 @@
 ---
 title: cmd-ipc
-description: Type-safe Inter-Process Communication for TypeScript
+description: Type-safe Inter-Process Communication for TypeScript and Rust
 template: splash
 hero:
-  tagline: A powerful IPC library for running typed Commands across multiple processes and services with full TypeScript support.
+  tagline: A polyglot IPC library for running typed Commands across processes and services. Same protocol in TypeScript and Rust.
   image:
     file: ../../assets/logo-dark.svg
   actions:
@@ -16,61 +16,87 @@ hero:
       icon: external
 ---
 
-import { Card, CardGrid } from '@astrojs/starlight/components';
+import { Card, CardGrid, Tabs, TabItem } from '@astrojs/starlight/components';
 
 ## Why cmd-ipc?
 
-Building applications that span multiple processes, workers, or services often means dealing with complex message passing, type mismatches, and boilerplate code. **cmd-ipc** solves this by providing a unified, type-safe command system that works across any boundary.
+Building applications that span multiple processes, workers, or services often means dealing with complex message passing, type mismatches, and boilerplate code. **cmd-ipc** solves this by providing a unified, type-safe command system that works across any boundary — in TypeScript, Rust, or both at once over the same wire protocol.
 
 <CardGrid stagger>
   <Card title="Type-Safe Commands" icon="approve-check">
-    Define commands with Valibot schemas and get full TypeScript inference across process boundaries. No more runtime type errors.
+    Full TypeScript inference via Valibot, or compile-time-checked Rust types via schemars. Same guarantees across process boundaries.
   </Card>
-  <Card title="Universal Channels" icon="random">
-    Works with Web Workers, Electron IPC, HTTP APIs, WebSockets, and more. Same API everywhere.
+  <Card title="Polyglot" icon="random">
+    TypeScript and Rust implementations share a byte-identical wire protocol. Call a Rust command from Node.js or vice versa.
   </Card>
-  <Card title="Decorator-Based" icon="puzzle">
-    Use `@Command` decorators to define handlers. Clean, readable code with zero boilerplate.
+  <Card title="Universal Channels" icon="puzzle">
+    MessagePort, HTTP, MCP, in-memory — same API regardless of transport. Plug in custom channels for anything else.
   </Card>
   <Card title="Event Broadcasting" icon="rocket">
-    Broadcast events across all connected processes with automatic routing and deduplication.
+    Fire-and-forget events propagate across all connected processes with automatic deduplication.
   </Card>
 </CardGrid>
 
 ## Quick Example
 
-```typescript
-import { CommandRegistry, Command, registerCommands } from '@coralstack/cmd-ipc'
-import * as v from 'valibot'
+<Tabs syncKey="lang">
+  <TabItem label="TypeScript" icon="seti:typescript">
+    ```typescript
+    import { CommandRegistry, Command, registerCommands } from '@coralstack/cmd-ipc'
+    import * as v from 'valibot'
 
-// Define your command schema
-const CommandSchema = {
-  'math.add': {
-    request: v.object({ a: v.number(), b: v.number() }),
-    response: v.number(),
-  },
-} as const
+    const CommandSchema = {
+      'math.add': {
+        request: v.object({ a: v.number(), b: v.number() }),
+        response: v.number(),
+      },
+    } as const
 
-// Create a command handler
-class MathService {
-  @Command('math.add')
-  add({ a, b }: { a: number; b: number }): number {
-    return a + b
-  }
-}
+    class MathService {
+      @Command('math.add')
+      add({ a, b }: { a: number; b: number }): number {
+        return a + b
+      }
+    }
 
-// Set up the registry
-const registry = new CommandRegistry({
-  id: 'main',
-  schemas: { commands: CommandSchema },
-})
+    const registry = new CommandRegistry({
+      id: 'main',
+      schemas: { commands: CommandSchema },
+    })
 
-registerCommands([new MathService()], registry)
+    registerCommands([new MathService()], registry)
 
-// Execute with full type safety
-const result = await registry.executeCommand('math.add', { a: 5, b: 3 })
-// result is typed as number = 8
-```
+    const result = await registry.executeCommand('math.add', { a: 5, b: 3 })
+    // result is typed as number = 8
+    ```
+  </TabItem>
+  <TabItem label="Rust" icon="seti:rust">
+    ```rust
+    use coralstack_cmd_ipc::prelude::*;
+
+    #[payload]
+    struct AddReq { a: i64, b: i64 }
+
+    struct MathService;
+
+    #[command_service]
+    impl MathService {
+        #[command("math.add", description = "Add two integers")]
+        async fn add(&self, req: AddReq) -> Result<i64, CommandError> {
+            Ok(req.a + req.b)
+        }
+    }
+
+    let registry = CommandRegistry::new(Config::default());
+    MathService.register(&registry).await?;
+
+    let sum = registry
+        .execute::<math_service::Add>(AddReq { a: 5, b: 3 })
+        .await?;
+    // sum: i64 = 8
+    ```
+  </TabItem>
+</Tabs>
 
 ## Use Cases
 
@@ -101,5 +127,5 @@ const result = await registry.executeCommand('math.add', { a: 5, b: 3 })
 ---
 
 <div style="text-align: center; margin-top: 2rem;">
-  Ready to get started? Check out the [installation guide](/cmd-ipc/getting-started/installation/) or explore the [examples](/cmd-ipc/examples/overview/).
+  Ready to get started? Check out the [installation guide](/cmd-ipc/getting-started/installation/) or explore the [examples](/cmd-ipc/examples/overview/). For the Rust crate, see the [Rust API](/cmd-ipc/api/rust/).
 </div>

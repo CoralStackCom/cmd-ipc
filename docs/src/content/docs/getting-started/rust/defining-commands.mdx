@@ -1,0 +1,156 @@
+---
+title: Defining Commands
+description: Register commands in Rust with the #[command] / #[command_service] macros
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+A command is an async function with an ID. The `#[command]` attribute macro binds a function (or impl method) to a command ID, and `#[command_service]` on an `impl` block lets you register every tagged method at once via `MyService.register(&registry)`.
+
+## The basic shape
+
+```rust
+use coralstack_cmd_ipc::prelude::*;
+
+#[payload]
+struct AddReq { a: i64, b: i64 }
+
+struct MathService;
+
+#[command_service]
+impl MathService {
+    #[command("math.add", description = "Add two integers")]
+    async fn add(&self, req: AddReq) -> Result<i64, CommandError> {
+        Ok(req.a + req.b)
+    }
+}
+
+let registry = CommandRegistry::new(Config::default());
+MathService.register(&registry).await?;
+
+// Strict-mode dispatch: each tagged method is a type under a nested
+// module named after the host (snake_case). No service instance needed.
+let sum: i64 = registry.execute::<math_service::Add>(AddReq { a: 2, b: 3 }).await?;
+```
+
+<Aside type="tip">
+  `coralstack-cmd-ipc` is the only crate you need to list in `Cargo.toml`. It re-exports `serde` and `schemars`, which the `#[payload]` / `#[event]` macros expand against. No extra derive crates, no feature flags.
+</Aside>
+
+## Request and response types
+
+`#[payload]` is the short form for "derive `Serialize` + `Deserialize` + `JsonSchema` against `coralstack-cmd-ipc`'s re-exports". Use it on every request and response struct:
+
+```rust
+#[payload]
+pub struct CalcReq { pub a: f64, pub b: f64 }
+
+#[payload]
+pub struct CalcRes { pub result: f64 }
+```
+
+You can still add extra derives (`Clone`, `Debug`, `PartialEq`) normally — `#[payload]` is additive.
+
+<Aside type="note">
+  There's no `defineIds`-equivalent. Command IDs are plain string literals passed to the `#[command]` attribute.
+</Aside>
+
+## Void commands
+
+For commands that take no request, return no response, or both, use `()` in the signature. The macro detects `()` and omits the corresponding schema slot — the wire message sends no `request` / `result` key (per the protocol spec).
+
+```rust
+#[command_service]
+impl WorkerControl {
+    // No request, no response — fires and resolves.
+    #[command("worker.reset")]
+    async fn reset(&self) -> Result<(), CommandError> { Ok(()) }
+
+    // Request only.
+    #[command("worker.configure")]
+    async fn configure(&self, cfg: WorkerConfig) -> Result<(), CommandError> {
+        /* ... */ Ok(())
+    }
+}
+```
+
+## Private commands
+
+Commands whose ID starts with `_` are **private** — they stay local to the registering process and are never announced to connected channels or exposed as MCP tools.
+
+```rust
+#[command_service]
+impl LocalOps {
+    #[command("_main.log")]
+    async fn log(&self, msg: String) -> Result<(), CommandError> {
+        eprintln!("{msg}");
+        Ok(())
+    }
+}
+```
+
+## Free-function shape
+
+For one-offs that don't warrant a service struct, attach `#[command]` directly to an `async fn`. The macro emits a `register_<fn_name>(&registry)` entry point:
+
+```rust
+#[command("greet")]
+async fn greet(name: String) -> Result<String, CommandError> {
+    Ok(format!("hello, {name}"))
+}
+
+register_greet(&registry).await?;
+```
+
+## Strict vs loose dispatch
+
+| Form | Use for | Signature |
+|---|---|---|
+| `registry.execute::<C>(req).await?` | Compile-time known commands — any `C: Command` | Request + response types pinned to `C::Request` / `C::Response` |
+| `registry.execute_dyn(id, json!({..})).await?` | Runtime-known ids — plugin hosts, FFI, scripting | Raw JSON in, raw JSON out |
+
+The macros produce `Command`-implementing structs you can pass to `execute::<_>` with no turbofish juggling. For runtime-constructed commands, see [`DynCommand`](/cmd-ipc/api/rust/#runtime-constructed-commands-dyncommand).
+
+## Defining events
+
+Events are fire-and-forget broadcasts — same registry, same channels, no response. Attach `#[event("id")]` to a payload struct. The macro auto-derives the three serde traits and emits the `Event` impl.
+
+```rust
+use coralstack_cmd_ipc::prelude::*;
+
+/// Worker has finished initializing.
+#[event("worker.ready")]
+pub struct WorkerReady {
+    pub worker_id: String,
+    pub command_count: u32,
+}
+
+// Void event — unit struct, no payload on the wire.
+#[event("worker.tick")]
+pub struct WorkerTick;
+
+// Emit — fully typed.
+registry.emit(WorkerReady {
+    worker_id: "w1".into(),
+    command_count: 2,
+})?;
+registry.emit(WorkerTick)?;
+
+// Listen — callback receives a deserialized `WorkerReady`.
+let _unsub = registry.on::<WorkerReady>(|event| {
+    println!("{} ready", event.worker_id);
+});
+```
+
+Private events (id starts with `_`) stay local: they fire to in-process listeners but are never broadcast across channels.
+
+For runtime-known event ids (plugin runtimes, FFI, scripting hosts), use `DynEvent` with `emit` and `on_dyn`:
+
+```rust
+use serde_json::json;
+
+registry.emit(DynEvent::new(runtime_id, json!({ "ok": true })))?;
+let _unsub = registry.on_dyn(runtime_id, |payload| {
+    println!("got event: {payload}");
+});
+```

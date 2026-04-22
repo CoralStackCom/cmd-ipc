@@ -3,7 +3,7 @@ title: What is cmd-ipc?
 description: An overview of cmd-ipc and its core concepts
 ---
 
-**cmd-ipc** is a TypeScript library for Inter-Process Communication (IPC) that provides a unified, type-safe command system for applications spanning multiple processes, workers, or services.
+**cmd-ipc** is a polyglot library for Inter-Process Communication (IPC) that provides a unified, type-safe command system for applications spanning multiple processes, workers, or services. It ships as both a TypeScript package ([`@coralstack/cmd-ipc`](https://www.npmjs.com/package/@coralstack/cmd-ipc)) and a Rust crate ([`coralstack-cmd-ipc`](https://crates.io/crates/coralstack-cmd-ipc)) that speak a byte-identical wire protocol.
 
 ## The Problem
 
@@ -30,9 +30,10 @@ const result = await registry.executeCommand('user.create', {
 
 ## Key Benefits
 
-- **Type Safety** — Full TypeScript inference with runtime validation using <a href="https://valibot.dev/" target="_blank" rel="noopener">Valibot</a> schemas
-- **Transport Agnostic** — Same API for MessagePort, HTTP, WebSockets, or custom channels
-- **Automatic Routing** — Commands route to the correct process without manual wiring
-- **Schema Discovery** — Remote services expose their command schemas for type generation
-- **Event Broadcasting** — Fire-and-forget events propagate to all connected processes
+- **Type Safety** — TypeScript inference via <a href="https://valibot.dev/" target="_blank" rel="noopener">Valibot</a>, or compile-time-checked Rust types via <a href="https://docs.rs/schemars" target="_blank" rel="noopener">schemars</a>. Runtime validation in both.
+- **Polyglot** — Identical wire protocol in TypeScript and Rust. Call a Rust command from Node.js or vice versa once a shared transport is configured.
+- **Transport Agnostic** — Same API for MessagePort, HTTP, MCP, in-memory, or custom channels.
+- **Automatic Routing** — Commands route to the correct registry without manual wiring, via the Hybrid Tree-Mesh architecture.
+- **Schema Discovery** — Remote services expose their command schemas for type generation (TypeScript CLI today).
+- **Event Broadcasting** — Fire-and-forget events propagate to all connected processes.
 

@@ -1,0 +1,118 @@
+---
+title: MCPChannel
+description: Expose a Rust CommandRegistry as an MCP server for AI agents
+---
+
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+The `coralstack-cmd-ipc-mcp` crate provides `McpServerChannel` — a `CommandChannel` that translates between MCP requests and cmd-ipc wire messages. It wraps the <a href="https://docs.rs/rmcp" target="_blank" rel="noopener">`rmcp`</a> SDK for protocol handling.
+
+Use cases:
+
+- Exposing application commands as AI agent tools (Claude Desktop, Cursor, etc.)
+- Building MCP-compatible servers from an existing command registry
+
+<Aside type="note">
+  Only the server side (`McpServerChannel`) is implemented today — connecting to remote MCP servers from Rust is not yet supported.
+</Aside>
+
+## Installation
+
+```bash
+cargo add coralstack-cmd-ipc-mcp
+```
+
+Stdio ships out of the box. For HTTP, TCP, or other transports, enable the corresponding rmcp feature in your own `Cargo.toml` and pass the transport to `serve()` (or use `into_handler()` for HTTP's per-session model).
+
+## Register the channel
+
+`McpServerChannel` implements `CommandChannel`, so it plugs into the registry like any other channel:
+
+```rust
+use std::sync::Arc;
+use coralstack_cmd_ipc::prelude::*;
+use coralstack_cmd_ipc_mcp::McpServerChannel;
+
+let registry = CommandRegistry::new(Config::default());
+MyService.register(&registry).await?;
+
+let mcp = Arc::new(McpServerChannel::new("mcp"));
+let driver = registry.register_channel(mcp.clone()).await?;
+tokio::spawn(driver);
+```
+
+The channel is a pure translation layer. Incoming MCP `tools/list` / `tools/call` emit `ListCommandsRequest` / `ExecuteCommandRequest` on `recv()`; the registry sends responses back via `send()`, correlated to the waiting MCP call by `thid`. Public commands (non-`_`-prefixed) appear as tools; private commands are never exposed.
+
+## Pick a transport
+
+Hand any rmcp-compatible transport to `serve(transport)`. Stdio ships out of the box; anything else you pass in yourself (no framework lock-in).
+
+<Tabs>
+  <TabItem label="Stdio">
+    Ideal for Claude Desktop, Cursor, and other local agents that spawn the server as a child process.
+
+    ```rust
+    // Completes when the MCP client disconnects.
+    mcp.clone().serve_stdio().await?;
+    ```
+
+    Equivalent to `mcp.serve(rmcp::transport::io::stdio())`.
+  </TabItem>
+  <TabItem label="TCP / AsyncRead+AsyncWrite">
+    Any type that rmcp's `IntoTransport` accepts — TCP streams, Unix sockets, `tokio::io::duplex` pairs, etc. Enable rmcp's `transport-async-rw` feature in your own `Cargo.toml`.
+
+    ```rust
+    let stream = tokio::net::TcpStream::connect("127.0.0.1:4000").await?;
+    mcp.clone().serve(stream).await?;
+    ```
+  </TabItem>
+  <TabItem label="Streamable HTTP (BYO framework)">
+    The MCP HTTP spec requires one handler per session, so HTTP integration is framework-specific. Call `into_handler()` as the per-session factory and plug it into whichever framework you're using (axum, actix, warp, hyper, …).
+
+    Example with axum + rmcp's streamable-HTTP service (enable `rmcp/transport-streamable-http-server` in your `Cargo.toml`):
+
+    ```rust
+    use std::sync::Arc;
+    use rmcp::transport::streamable_http_server::{
+        session::local::LocalSessionManager,
+        tower::{StreamableHttpServerConfig, StreamableHttpService},
+    };
+
+    let mcp = Arc::new(McpServerChannel::new("mcp"));
+    let driver = registry.register_channel(mcp.clone()).await?;
+    tokio::spawn(driver);
+
+    let channel = mcp.clone();
+    let service = StreamableHttpService::new(
+        move || Ok(channel.clone().into_handler()),
+        Arc::new(LocalSessionManager::default()),
+        StreamableHttpServerConfig::default(),
+    );
+
+    let app = axum::Router::new().nest_service("/mcp", service);
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;
+    axum::serve(listener, app).await?;
+    ```
+
+    `Arc::clone` is cheap, so the session manager mints a fresh handler per incoming HTTP session while all handlers share the one channel and its underlying registry.
+  </TabItem>
+</Tabs>
+
+## Configuration
+
+```rust
+let mcp = Arc::new(
+    McpServerChannel::new("mcp")
+        .with_implementation("my-app", "1.0.0")
+        .with_instructions("Optional hint for the agent about what this server does")
+        .with_timeout(std::time::Duration::from_secs(60)),
+);
+```
+
+| Method | Default | Description |
+|---|---|---|
+| `new(id)` | — | Channel id used by the registry |
+| `with_implementation(name, version)` | `cmd-ipc-mcp` / crate version | `serverInfo` reported on `initialize` |
+| `with_instructions(s)` | `None` | Text sent on `initialize` to orient the agent |
+| `with_timeout(Duration)` | 30s | Timeout for MCP-originated requests awaiting the registry |
+

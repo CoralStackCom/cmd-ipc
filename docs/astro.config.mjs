@@ -2,12 +2,27 @@ import sitemap from '@astrojs/sitemap'
 import starlight from '@astrojs/starlight'
 import mermaid from 'astro-mermaid'
 import { defineConfig } from 'astro/config'
+import rehypeExternalLinks from 'rehype-external-links'
 import { sidebar } from './src/config/sidebar'
 import llmify from './src/integrations/llmify'
 
 export default defineConfig({
   site: 'https://coralstack.com/cmd-ipc',
   base: '/cmd-ipc',
+  markdown: {
+    rehypePlugins: [
+      [
+        rehypeExternalLinks,
+        {
+          // Open external links in a new tab and harden against
+          // tabnabbing / referrer leakage. Relative and same-origin
+          // links are left untouched.
+          target: '_blank',
+          rel: ['noopener', 'noreferrer'],
+        },
+      ],
+    ],
+  },
   integrations: [
     mermaid(),
     starlight({

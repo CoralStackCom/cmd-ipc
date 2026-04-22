@@ -1,0 +1,46 @@
+name: Publish TypeScript (npm)
+
+on:
+  push:
+    tags:
+      - 'ts-v*' # TypeScript releases (e.g. ts-v1.0.0)
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+
+defaults:
+  run:
+    working-directory: ts
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Enable Corepack (for Yarn 4)
+        run: corepack enable
+
+      - name: Install dependencies
+        run: yarn install --immutable
+
+      - name: Build
+        run: yarn build
+
+      - name: Run tests
+        run: yarn test:run
+
+      - name: Publish @coralstack/cmd-ipc
+        run: npm publish --provenance --access public
+        working-directory: ts/packages/cmd-ipc
+
+      - name: Publish @coralstack/cmd-ipc-mcp
+        run: npm publish --provenance --access public
+        working-directory: ts/packages/cmd-ipc-mcp

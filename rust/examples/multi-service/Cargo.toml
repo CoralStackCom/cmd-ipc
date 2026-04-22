@@ -1,0 +1,19 @@
+[package]
+name = "multi-service"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "multi-service"
+path = "src/main.rs"
+
+[dependencies]
+coralstack-cmd-ipc = { path = "../../crates/cmd-ipc" }
+# serde_json is needed at the use site for raw JSON manipulation in the
+# REPL. serde / schemars come transitively through `coralstack-cmd-ipc`'s
+# re-exports and are reached via the prelude / `#[payload]` macro.
+serde_json = { workspace = true }
+futures = { workspace = true, features = ["executor", "thread-pool"] }

@@ -1,0 +1,66 @@
+{
+  "description": "After a peer registers math.add over a channel, executing math.add locally routes to the peer and returns the success response via thid.",
+  "setup": {
+    "registry": { "id": "main" },
+    "peers": [
+      {
+        "channelId": "worker-1",
+        "commandImplementations": [
+          {
+            "id": "math.add",
+            "returns": { "$expr": "request.a + request.b" }
+          }
+        ]
+      }
+    ]
+  },
+  "steps": [
+    {
+      "direction": "inbound",
+      "from": "worker-1",
+      "message": {
+        "id": "11111111-1111-4111-8111-111111111111",
+        "type": "register.command.request",
+        "command": { "id": "math.add" }
+      }
+    },
+    {
+      "direction": "outbound",
+      "to": "worker-1",
+      "expected": {
+        "id": { "$match": "uuid" },
+        "type": "register.command.response",
+        "thid": "11111111-1111-4111-8111-111111111111",
+        "response": { "ok": true }
+      }
+    },
+    {
+      "direction": "local-call",
+      "trigger": { "executeCommand": ["math.add", { "a": 2, "b": 3 }] }
+    },
+    {
+      "direction": "outbound",
+      "to": "worker-1",
+      "expected": {
+        "id": { "$capture": "execId" },
+        "type": "execute.command.request",
+        "commandId": "math.add",
+        "request": { "a": 2, "b": 3 }
+      }
+    },
+    {
+      "direction": "inbound",
+      "from": "worker-1",
+      "message": {
+        "id": "22222222-2222-4222-8222-222222222222",
+        "type": "execute.command.response",
+        "thid": { "$ref": "execId" },
+        "response": { "ok": true, "result": 5 }
+      }
+    },
+    {
+      "direction": "local-result",
+      "expected": 5
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "description": "execute.command.response success envelope round-trips",
+  "schema": "execute.command.response.json",
+  "message": {
+    "id": "33333333-3333-4333-8333-333333333333",
+    "type": "execute.command.response",
+    "thid": "22222222-2222-4222-8222-222222222222",
+    "response": { "ok": true, "result": 5 }
+  },
+  "json": "{\"id\":\"33333333-3333-4333-8333-333333333333\",\"type\":\"execute.command.response\",\"thid\":\"22222222-2222-4222-8222-222222222222\",\"response\":{\"ok\":true,\"result\":5}}"
+}

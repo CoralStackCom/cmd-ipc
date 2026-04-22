@@ -1,0 +1,310 @@
+---
+title: API Reference
+description: API reference for coralstack-cmd-ipc (Rust)
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Reference for the Rust crates. Full rustdoc with all generics, trait bounds, and method signatures is published on docs.rs — this page is a high-level cheatsheet.
+
+| Crate | docs.rs | crates.io | Purpose |
+|---|---|---|---|
+| `coralstack-cmd-ipc` | [docs.rs](https://docs.rs/coralstack-cmd-ipc) | [crates.io](https://crates.io/crates/coralstack-cmd-ipc) | Core registry, channels, protocol |
+| `coralstack-cmd-ipc-macros` | [docs.rs](https://docs.rs/coralstack-cmd-ipc-macros) | [crates.io](https://crates.io/crates/coralstack-cmd-ipc-macros) | `#[command]` / `#[command_service]` / `#[event]` / `#[payload]` attribute macros |
+| `coralstack-cmd-ipc-mcp` | [docs.rs](https://docs.rs/coralstack-cmd-ipc-mcp) | [crates.io](https://crates.io/crates/coralstack-cmd-ipc-mcp) | MCP server adapter (via `rmcp`) |
+
+<Aside type="tip">
+  The core crate re-exports `coralstack-cmd-ipc-macros`, `serde`, `schemars`, and `serde_json`, so listing `coralstack-cmd-ipc` as your only dependency is enough — you get the macros, prelude, runtime, and the derive crates they expand against in one.
+</Aside>
+
+## Prelude
+
+```rust
+use coralstack_cmd_ipc::prelude::*;
+```
+
+Brings into scope: `command`, `command_service`, `event`, `payload`, `BoxedDynCommand`, `ChannelError`, `Command`, `CommandChannel`, `CommandDef`, `CommandError`, `CommandRegistry`, `CommandSchema`, `Config`, `DynCommand`, `DynEvent`, `Event`, `InMemoryChannel`.
+
+## CommandRegistry
+
+The central hub — mirrors the TypeScript `CommandRegistry` 1:1.
+
+```rust
+use coralstack_cmd_ipc::prelude::*;
+use std::time::Duration;
+
+let registry = CommandRegistry::new(Config {
+    id: Some("main".into()),
+    router_channel: None,
+    request_ttl: Duration::from_secs(30),
+    event_ttl: Duration::from_secs(5),
+});
+```
+
+### Config
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | `Option<String>` | Registry identifier for logging |
+| `router_channel` | `Option<String>` | Channel ID for escalating unknown commands |
+| `request_ttl` | `Duration` | Timeout for pending requests |
+| `event_ttl` | `Duration` | TTL for event deduplication |
+
+### Methods
+
+| Method | Mirrors TS | Notes |
+|---|---|---|
+| `register_command(cmd)` | `registerCommand` | Single entry point. Takes any `C: Command` — typed `#[command]`-macro structs for compile-time commands, [`DynCommand`](#command-trait) for runtime-constructed commands |
+| `register_channel(channel)` | `registerChannel` | Returns a driver future — **spawn it on your executor** |
+| `execute::<C>(req)` | strict `executeCommand<K>` | `C: Command` pins request and response types |
+| `execute_dyn(id, req: Value)` | loose `executeCommand` | Raw JSON in, raw JSON out — for runtime-known ids |
+| `emit(event)` | `emitEvent` | Single entry point. Takes any `E: Event` — typed `#[event]`-macro structs or [`DynEvent`](#event-trait) |
+| `on::<E>(cb)` | typed `addEventListener` | `E: Event + DeserializeOwned`; callback receives deserialized `E` |
+| `on_dyn(id, cb)` | dynamic `addEventListener` | Runtime id; callback receives raw `Value` |
+| `list_commands()` | `listCommands` | Returns `Vec<CommandDef>` |
+| `list_channels()` | `listChannels` | Returns connected channel IDs |
+| `dispose().await` | `dispose` | **Async** — awaits each `channel.close()` before returning |
+| `id()` | `id` property | Registry identifier |
+
+<Aside type="note">
+  Commands owned by a channel are cleaned up automatically when the channel closes. There is no `unregister_command`, matching the TS reference. For dynamic lifecycle-scoped command groups (Flow's QuickJS plugins, any plugin host), implement a custom `CommandChannel` that advertises its commands on connect and closes itself on unload. See the [`dynamic-plugin`](/cmd-ipc/examples/rust/) example for a worked walkthrough.
+</Aside>
+
+### Driving channels
+
+`register_channel` does not spawn anything — it returns a future you own. Poll it with whatever executor you run elsewhere:
+
+```rust
+// Tokio
+let driver = registry.register_channel(channel).await?;
+tokio::spawn(driver);
+
+// futures::executor / smol / async-std — same shape, different spawner.
+```
+
+Forgetting to spawn the driver means the registry never processes incoming messages from that channel. `dispose()` will still work (it awaits each `channel.close()`), but until then the channel is silent from the registry's point of view.
+
+### request_ttl vs handler duration
+
+The registry rejects pending `execute` calls after `request_ttl` with a `Timeout` error. Late responses that arrive after expiry find no pending handler and are silently dropped (per spec). For slow handlers — long JS execution in a plugin, large HTTP fetches — raise `request_ttl` above the worst-case handler duration, or enforce a shorter timeout on the handler side.
+
+### Void commands and events
+
+Model void as `()`:
+
+```rust
+#[command("worker.reset")]
+async fn reset(&self) -> Result<(), CommandError> { /* ... */ Ok(()) }
+
+// Unit struct = void event
+#[event("worker.tick")]
+struct WorkerTick;
+```
+
+The macro detects `()` for request or response and omits that slot from the advertised schema. On the wire the registry omits the `request`, `result`, and `payload` fields entirely (rather than sending `null`), per the JSON schemas in `spec/`.
+
+## Command trait
+
+Strict-mode typing — the Rust equivalent of `CommandSchemaMap`.
+
+```rust
+use coralstack_cmd_ipc::prelude::*;
+
+#[payload]
+struct AddReq { a: i64, b: i64 }
+
+struct Add;
+
+impl Command for Add {
+    const ID: &'static str = "math.add";
+    const DESCRIPTION: Option<&'static str> = Some("Add two integers");
+    type Request = AddReq;
+    type Response = i64;
+
+    async fn handle(&self, req: AddReq) -> Result<i64, CommandError> {
+        Ok(req.a + req.b)
+    }
+
+    // Optional — omit to skip schema advertising. Without a schema,
+    // cross-language peers fall back to permissive validation.
+    fn schema(&self) -> Option<CommandSchema> {
+        Some(CommandSchema::empty().with_request(
+            serde_json::to_value(coralstack_cmd_ipc::schemars::schema_for!(AddReq)).unwrap(),
+        ))
+    }
+}
+
+// Register the typed command. The id, description, schema, and
+// request/response adapter are all pulled from the `Command` impl.
+registry.register_command(Add).await?;
+
+// Strict call — request and response types checked at compile time.
+let result: i64 = registry.execute::<Add>(AddReq { a: 2, b: 3 }).await?;
+```
+
+In practice you'd use `#[command("math.add")] async fn add(&self, req: AddReq) -> Result<i64, CommandError> { ... }` — the `#[command]` / `#[command_service]` macros generate the `Command` impl (including `schema()`) and a `register_*` / `.register(&registry)` helper that calls `register_command` for you. See [Defining Commands](/cmd-ipc/getting-started/rust/defining-commands/).
+
+### Runtime-constructed commands: `DynCommand`
+
+When the id or schema is only known at runtime (plugin runtimes, FFI, scripting hosts), build a [`DynCommand`](#command-trait) and register it the same way. There is no separate "dyn" registration method — `DynCommand` implements `Command`, so it goes through `register_command` alongside typed commands:
+
+```rust
+use serde_json::{json, Value};
+
+// Dynamic id, `Value` in/out — simplest form.
+let cmd = DynCommand::new(runtime_id, |req: Value| async move {
+    Ok(json!({ "echoed": req }))
+});
+registry.register_command(cmd).await?;
+
+// Dynamic id, typed in/out — works too: types are inferred from the closure.
+let cmd = DynCommand::new(runtime_id, |req: AddReq| async move {
+    Ok(req.a + req.b)
+})
+.description("Runtime adder")
+.request_schema(runtime_request_schema)
+.response_schema(runtime_response_schema);
+registry.register_command(cmd).await?;
+```
+
+Builders:
+
+- `.description(..)` — human-readable description surfaced to MCP clients and `list_commands`.
+- `.schema(CommandSchema)` — attach a full request+response schema pair.
+- `.request_schema(Value)` / `.response_schema(Value)` — set one slot at a time.
+
+For a `Vec` of heterogeneous runtime commands (a plugin host holding many handlers), use [`BoxedDynCommand`](#boxeddyncommand):
+
+```rust
+use coralstack_cmd_ipc::BoxedDynCommand;
+use serde_json::json;
+
+let a: BoxedDynCommand = DynCommand::boxed("plugin.hello", |_| async { Ok(json!("hi")) });
+let b: BoxedDynCommand = DynCommand::boxed("plugin.bye",   |_| async { Ok(json!("bye")) });
+let commands: Vec<BoxedDynCommand> = vec![a, b];
+for cmd in commands {
+    registry.register_command(cmd).await?;
+}
+```
+
+`DynCommand::boxed` erases the handler's concrete closure type into `BoxedHandler`, giving every command the same static type so they can share a collection.
+
+### Permissive schemas for plugins
+
+`CommandSchema::permissive()` advertises a fully open `any → any` schema — the right default when a plugin's exported function has no introspectable types (e.g. a QuickJS `function(req) { ... }`). `CommandSchema::empty()` advertises no schema on either slot (void/void); attach real schemas via `.with_request(..)` / `.with_response(..)`.
+
+## Event trait
+
+Typed events — the event payload struct *is* the event. Attach `#[event("id")]` to a struct and it becomes a typed event usable with `emit` / `on`. The macro auto-derives `Serialize` / `Deserialize` / `JsonSchema` against the re-exports from `coralstack-cmd-ipc`, so user crates don't add those dependencies themselves.
+
+```rust
+use coralstack_cmd_ipc::prelude::*;
+
+/// Worker has finished initializing.
+#[event("worker.ready")]
+pub struct WorkerReady {
+    pub worker_id: String,
+    pub command_count: u32,
+}
+
+// Void event — a unit struct emits no payload on the wire.
+#[event("worker.tick")]
+pub struct WorkerTick;
+
+// Emit — fully typed.
+registry.emit(WorkerReady {
+    worker_id: "w1".into(),
+    command_count: 2,
+})?;
+registry.emit(WorkerTick)?;
+
+// Listen — callback receives a deserialized `WorkerReady`.
+let _unsub = registry.on::<WorkerReady>(|event| {
+    println!("{} ready with {}", event.worker_id, event.command_count);
+});
+```
+
+### Runtime-constructed events: `DynEvent`
+
+When the id or payload shape is only known at runtime, build a `DynEvent`:
+
+```rust
+use serde_json::json;
+
+registry.emit(DynEvent::new("plugin.foo", json!({ "ok": true })))?;
+
+let _unsub = registry.on_dyn("plugin.foo", |payload| {
+    println!("got dynamic event: {payload}");
+});
+```
+
+Private events (id starts with `_`) fire only to local listeners — never broadcast across channels. Same rule as for commands.
+
+## CommandChannel trait
+
+```rust
+#[async_trait]
+pub trait CommandChannel: Send + Sync {
+    fn id(&self) -> &str;
+    async fn send(&self, message: Message) -> Result<(), ChannelError>;
+    fn subscribe(&self) -> Receiver<Message>;
+    async fn close(&self) -> Result<(), ChannelError>;
+}
+```
+
+Built-in implementation:
+
+- **`InMemoryChannel`** — `InMemoryChannel::pair(local_id, peer_id)` returns two `Arc<InMemoryChannel>` halves wired together. Ideal for same-process tests and single-process multi-registry setups. See [InMemoryChannel](/cmd-ipc/getting-started/rust/channels/in-memory-channel/).
+
+Implement the trait for custom transports (WebSocket, gRPC, stdio, etc.). The wire `Message` type is byte-identical to the TypeScript union — see [Protocol](/cmd-ipc/introduction/protocol/).
+
+## Macros
+
+Re-exported from `coralstack-cmd-ipc-macros`. See [Defining Commands](/cmd-ipc/getting-started/rust/defining-commands/) for full usage.
+
+- `#[command("id", description = "...")]` — attribute on a free `async fn` or an `impl` method. For a free fn named `greet`, also emits a `register_greet(&registry).await?` helper and a `GreetCommand` type usable with strict `execute::<GreetCommand>(..)`.
+- `#[command_service]` — attribute on an `impl Host` block. Generates:
+  - `Host.register(&registry).await?` — installs every tagged method.
+  - A nested `pub(super) mod host_snake_case_name` containing one wrapper type per method, reachable for strict execute: `registry.execute::<host_name::MethodName>(req).await?`.
+- `#[event("id")]` — attribute on a payload struct. Auto-derives `Serialize` / `Deserialize` / `JsonSchema` **and** emits an `impl Event for Struct` with id and schemars-derived schema. The struct is then usable as `registry.emit(Struct { .. })` and `registry.on::<Struct>(cb)`. Unit structs (`struct Foo;`) produce void events (no payload on the wire).
+- `#[payload]` — attribute on any struct (typically command request/response types). Auto-derives `Serialize` / `Deserialize` / `JsonSchema` against the `serde` / `schemars` re-exports from `coralstack-cmd-ipc`, so user crates don't need to add those dependencies themselves. Additive — extra derives (`Clone`, `Debug`, …) can be stacked on top normally.
+
+## Errors
+
+| Type | Purpose |
+|---|---|
+| `CommandError` | Returned from command handlers; serialized as `ExecuteError` on the wire |
+| `ChannelError` | Transport-level failures |
+| `ExecuteErrorCode` | Enum of wire-level error codes (`CommandNotFound`, `ValidationError`, etc.) |
+| `RegisterErrorCode` | Enum of registration error codes (`CommandAlreadyRegistered`) |
+
+## MCP adapter
+
+`coralstack-cmd-ipc-mcp::McpServerChannel` implements `CommandChannel`, so it registers on the registry like any other channel. It wraps an `rmcp` server handler internally.
+
+```rust
+use std::sync::Arc;
+use coralstack_cmd_ipc_mcp::McpServerChannel;
+
+let mcp = Arc::new(McpServerChannel::new("mcp"));
+let driver = registry.register_channel(mcp.clone()).await?;
+tokio::spawn(driver);
+
+mcp.serve_stdio().await?;
+```
+
+Pure translation between MCP and cmd-ipc wire messages — no registry reference held. MCP `tools/list` / `tools/call` emit `ListCommandsRequest` / `ExecuteCommandRequest` through `recv()`; the registry's `ExecuteCommandResponse` comes back via `send()` and is correlated to the waiting MCP call by `thid`.
+
+| Method | Purpose |
+|---|---|
+| `new(id)` | Create the channel with a given id |
+| `with_implementation(name, version)` | Override the `serverInfo` reported to MCP clients |
+| `with_instructions(s)` | Attach an `instructions` string for MCP clients |
+| `with_timeout(Duration)` | Timeout for MCP-originated requests awaiting the registry |
+| `serve(transport)` | Drive the MCP protocol over any rmcp transport (stdio, TCP, duplex, WebSocket, …) |
+| `serve_stdio()` | Convenience wrapper: `serve(rmcp::transport::io::stdio())` |
+| `into_handler()` | Returns an rmcp `ServerHandler` — use this to plug into HTTP frameworks (axum, actix, warp, …) as a per-session handler factory |
+
+Stdio ships in the crate by default. For HTTP or any other transport, enable the relevant rmcp feature in your own `Cargo.toml` and pass the transport to `serve()` (or use `into_handler()` for HTTP's per-session model).
+
+Private commands (prefixed with `_`) are never exposed as tools.

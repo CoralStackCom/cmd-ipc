@@ -1,0 +1,32 @@
+{
+  "description": "Commands whose ID begins with '_' are private and MUST NOT be advertised in list.commands.response or broadcast via register.command.request. (Privacy is enforced on the listing/broadcast layer — the execute path is unrestricted, so a peer that already knows a private ID can still invoke it. Production uses rely on privacy being unadvertised.)",
+  "setup": {
+    "registry": {
+      "id": "main",
+      "localCommands": [
+        { "id": "math.add", "returns": { "$expr": "request.a + request.b" } },
+        { "id": "_secret.ping", "returns": "pong" }
+      ]
+    },
+    "peers": [{ "channelId": "worker-1" }]
+  },
+  "steps": [
+    {
+      "direction": "inbound",
+      "from": "worker-1",
+      "message": {
+        "id": "11111111-1111-4111-8111-111111111111",
+        "type": "list.commands.request"
+      }
+    },
+    {
+      "direction": "outbound",
+      "to": "worker-1",
+      "expected": {
+        "type": "list.commands.response",
+        "thid": "11111111-1111-4111-8111-111111111111",
+        "commands": [{ "id": "math.add" }]
+      }
+    }
+  ]
+}

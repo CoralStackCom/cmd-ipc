@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://coralstack.com/cmd-ipc/spec/v1/list.commands.response.json",
+  "title": "ListCommandsResponse",
+  "type": "object",
+  "required": ["id", "type", "thid", "commands"],
+  "additionalProperties": false,
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "type": { "const": "list.commands.response" },
+    "thid": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Echoes the 'id' of the list.commands.request being responded to."
+    },
+    "commands": {
+      "type": "array",
+      "items": { "$ref": "command-definition.json" }
+    }
+  }
+}

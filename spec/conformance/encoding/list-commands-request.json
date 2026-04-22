@@ -1,0 +1,9 @@
+{
+  "description": "list.commands.request carries only id+type",
+  "schema": "list.commands.request.json",
+  "message": {
+    "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    "type": "list.commands.request"
+  },
+  "json": "{\"id\":\"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa\",\"type\":\"list.commands.request\"}"
+}

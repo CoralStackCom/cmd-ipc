@@ -1,0 +1,26 @@
+[package]
+name = "coralstack-cmd-ipc"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Inter-Process Communication library for running typed Commands across processes and services"
+readme = "README.md"
+keywords = ["ipc", "rpc", "mcp", "agents", "commands"]
+categories = ["asynchronous", "network-programming"]
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+schemars.workspace = true
+futures.workspace = true
+uuid.workspace = true
+thiserror.workspace = true
+parking_lot.workspace = true
+coralstack-cmd-ipc-macros = { path = "../cmd-ipc-macros", version = "0.1.0" }
+
+[dev-dependencies]
+futures = { workspace = true, features = ["executor", "thread-pool"] }
+serde = { workspace = true, features = ["derive"] }

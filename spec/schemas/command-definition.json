@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://coralstack.com/cmd-ipc/spec/v1/command-definition.json",
+  "title": "CommandDefinitionBase",
+  "description": "Shared shape for a command entry as carried on the wire (in register/list messages).",
+  "type": "object",
+  "required": ["id"],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Command ID. IDs prefixed with '_' are private and MUST NOT appear in wire messages."
+    },
+    "description": {
+      "type": "string"
+    },
+    "schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "request": {
+          "description": "JSON Schema for the request payload (implementation-defined shape)"
+        },
+        "response": { "description": "JSON Schema for the response result" }
+      }
+    }
+  }
+}

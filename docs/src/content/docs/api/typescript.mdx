@@ -1,0 +1,349 @@
+---
+title: API Reference
+description: API reference for @coralstack/cmd-ipc (TypeScript)
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Reference for the TypeScript package [`@coralstack/cmd-ipc`](https://www.npmjs.com/package/@coralstack/cmd-ipc). See the [Rust API](/cmd-ipc/api/rust/) for the corresponding Rust crate.
+
+## Core Classes
+
+### CommandRegistry
+
+The central hub for managing commands and channels. Supports a Hybrid Tree-Mesh architecture with optional `routerChannel` for command escalation.
+
+```typescript
+import { CommandRegistry } from '@coralstack/cmd-ipc'
+
+const registry = new CommandRegistry({
+  id: 'my-registry',           // Optional: identifier for logging
+  schemas: {                   // Optional: enables strict mode with type safety
+    commands: CommandSchema,
+    events: EventSchema,
+  },
+  routerChannel: 'parent',     // Optional: channel ID for escalating unknown commands
+  logger: console,             // Optional: logging interface
+  requestTTL: 30000,           // Optional: TTL for request handlers (default: 30000ms)
+  eventTTL: 5000,              // Optional: TTL for event deduplication (default: 5000ms)
+})
+```
+
+#### Configuration Options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `id` | `string` | `undefined` | Identifier for logging |
+| `schemas` | `{ commands?, events? }` | `undefined` | Schema maps for strict mode |
+| `routerChannel` | `string` | `undefined` | Channel ID for escalating unknown commands |
+| `logger` | `Logger` | `undefined` | Logging interface (info, warn, error, debug) |
+| `requestTTL` | `number` | `30000` | Timeout for pending requests in milliseconds |
+| `eventTTL` | `number` | `5000` | TTL for event deduplication in milliseconds |
+
+#### Methods
+
+| Method | Description |
+|--------|-------------|
+| `registerChannel(channel)` | Register a communication channel |
+| `listChannels()` | Get all registered channel IDs |
+| `registerCommand(id, handler)` | Register a local command handler |
+| `listCommands()` | Get all registered commands with metadata |
+| `executeCommand(id, ...args)` | Execute a command and return the result |
+| `emitEvent(eventId, ...args)` | Broadcast an event to all listeners |
+| `addEventListener(eventId, handler)` | Subscribe to an event, returns unsubscribe function |
+| `removeEventListener(eventId, handler)` | Unsubscribe from an event |
+| `dispose()` | Clean up all resources and close channels |
+
+### MessagePortChannel
+
+Channel implementation for MessagePort-based communication. Works with Web Workers, Node.js worker_threads, and Electron IPC.
+
+```typescript
+import { MessagePortChannel } from '@coralstack/cmd-ipc'
+
+const { port1, port2 } = new MessageChannel()
+const channel = new MessagePortChannel('worker', port1)
+
+await registry.registerChannel(channel)
+```
+
+#### Constructor Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `id` | `string` | Unique identifier for this channel |
+| `port` | `MessagePort \| Worker` | The underlying communication port |
+
+### HTTPChannel
+
+Channel implementation for HTTP-based communication. Supports two modes: client mode for consuming remote APIs, and server mode for exposing commands via HTTP.
+
+```typescript
+import { HTTPChannel } from '@coralstack/cmd-ipc'
+
+// Client mode - connect to a remote server
+const clientChannel = new HTTPChannel({
+  id: 'api',
+  baseUrl: 'https://api.example.com',
+  commandPrefix: 'api',  // Remote 'user.create' becomes 'api.user.create'
+  timeout: 30000,
+})
+
+// Server mode - expose commands via HTTP
+const serverChannel = new HTTPChannel({
+  id: 'http-server',
+})
+```
+
+#### Configuration Options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `id` | `string` | Required | Unique identifier |
+| `baseUrl` | `string` | `undefined` | Client mode only. Server URL (omit for server mode) |
+| `commandPrefix` | `string` | `undefined` | Client mode only. Prefix added to remote command IDs |
+| `timeout` | `number` | `30000` | Request timeout in milliseconds |
+
+#### Methods
+
+| Method | Description |
+|--------|-------------|
+| `start()` | Start the channel (client mode fetches remote commands) |
+| `close()` | Close the channel |
+| `sendMessage(message)` | Send a message through the channel |
+| `handleMessage(body)` | Server mode only. Handle incoming HTTP request and return response |
+| `on(event, listener)` | Subscribe to 'message' or 'close' events |
+
+## Decorators
+
+### @Command
+
+Decorator to register a class method as a command handler.
+
+```typescript
+import { Command, registerCommands } from '@coralstack/cmd-ipc'
+
+class MathService {
+  @Command('math.add')
+  add({ a, b }: { a: number; b: number }): Promise<number> {
+    return Promise.resolve(a + b)
+  }
+
+  @Command('math.multiply')
+  multiply({ a, b }: { a: number; b: number }): Promise<number> {
+    return Promise.resolve(a * b)
+  }
+}
+
+// Register all decorated methods
+registerCommands([new MathService()], registry)
+```
+
+<Aside type="note">
+  The `@Command` decorator requires `experimentalDecorators` and `emitDecoratorMetadata` in your tsconfig.json, and the <a href="https://www.npmjs.com/package/reflect-metadata" target="_blank" rel="noopener">reflect-metadata</a> package.
+</Aside>
+
+## Functions
+
+### registerCommands
+
+Register command handlers from service class instances.
+
+```typescript
+import { registerCommands } from '@coralstack/cmd-ipc'
+
+// Pass class instances with @Command decorated methods
+registerCommands([new MathService(), new UserService()], registry)
+```
+
+### defineIds
+
+Helper function to create type-safe ID constants from a schema map. Converts dot-notation IDs to CONSTANT_CASE.
+
+```typescript
+import { defineIds } from '@coralstack/cmd-ipc'
+
+// For commands
+const CommandIds = defineIds(CommandSchema)
+// CommandIds.MATH_ADD = 'math.add'
+// CommandIds.USER_GET = 'user.get'
+
+// For events
+const EventIds = defineIds(EventSchema)
+// EventIds.USER_CREATED = 'user.created'
+// EventIds.USER_DELETED = 'user.deleted'
+```
+
+### publishSchemaDoc
+
+Creates a schema document from a command registry for publishing at `GET /cmds.json`. This enables the CLI to generate TypeScript schemas for remote commands. Only public commands (those without `isPrivate: true`) are included.
+
+```typescript
+import { publishSchemaDoc } from '@coralstack/cmd-ipc'
+
+// In your HTTP server handler for GET /cmds.json
+const schemaDoc = publishSchemaDoc(registry.listCommands())
+// Returns: { cmdschema: '1.0.0', commands: [...] }
+```
+
+#### Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `commands` | `readonly IListCommandDefinition[]` | Commands from `registry.listCommands()` |
+
+#### Returns
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `cmdschema` | `string` | Schema version (currently `'1.0.0'`) |
+| `commands` | `ICommandDefinitionBase[]` | Array of public command definitions with `id`, `description`, and `schema` |
+
+#### Example Usage
+
+```typescript
+// Express
+app.get('/cmds.json', (req, res) => {
+  res.json(publishSchemaDoc(registry.listCommands()))
+})
+
+// Cloudflare Workers
+if (request.method === 'GET' && url.pathname === '/cmds.json') {
+  return new Response(JSON.stringify(publishSchemaDoc(registry.listCommands())), {
+    headers: { 'Content-Type': 'application/json' }
+  })
+}
+```
+
+## Types
+
+### CommandSchemaMap
+
+Interface for defining command schemas with Valibot.
+
+```typescript
+import type { CommandSchemaMap } from '@coralstack/cmd-ipc'
+import * as v from 'valibot'
+
+const CommandSchema = {
+  'math.add': {
+    description: 'Add two numbers',
+    request: v.object({ a: v.number(), b: v.number() }),
+    response: v.number(),
+  },
+  'user.get': {
+    description: 'Get user by ID',
+    request: v.object({ id: v.string() }),
+    response: v.object({ id: v.string(), name: v.string() }),
+  },
+} as const satisfies CommandSchemaMap
+```
+
+### EventSchemaMap
+
+Interface for defining event schemas with Valibot.
+
+```typescript
+import type { EventSchemaMap } from '@coralstack/cmd-ipc'
+import * as v from 'valibot'
+
+const EventSchema = {
+  'user.created': v.object({ id: v.string(), name: v.string() }),
+  'user.deleted': v.object({ id: v.string() }),
+} as const satisfies EventSchemaMap
+```
+
+### CommandRequest / CommandResponse
+
+Helper types to extract request/response types from schemas.
+
+```typescript
+import type { CommandRequest, CommandResponse } from '@coralstack/cmd-ipc'
+
+type AddRequest = CommandRequest<typeof CommandSchema, 'math.add'>
+// { a: number; b: number }
+
+type AddResponse = CommandResponse<typeof CommandSchema, 'math.add'>
+// number
+```
+
+### ICommandChannel
+
+Interface for implementing custom channels.
+
+```typescript
+import type { ICommandChannel } from '@coralstack/cmd-ipc'
+
+class MyChannel implements ICommandChannel {
+  readonly id: string
+
+  constructor(id: string) {
+    this.id = id
+  }
+
+  async start(): Promise<void> {
+    // Initialize channel
+  }
+
+  async close(): Promise<void> {
+    // Cleanup resources
+  }
+
+  sendMessage(message: unknown): void {
+    // Send message to remote process
+  }
+
+  on(event: 'message', listener: (msg: unknown) => void): void
+  on(event: 'close', listener: () => void): void
+  on(event: 'message' | 'close', listener: Function): void {
+    // Register event listeners
+  }
+}
+```
+
+## CLI
+
+### generate-schema
+
+Generate TypeScript schema from a remote server exposing commands via HTTPChannel.
+
+```bash
+cmd-ipc generate-schema \
+  --host <server-url> \
+  --output <output-file> \
+  [--prefix <command-prefix>]
+```
+
+#### Options
+
+| Option | Alias | Description |
+|--------|-------|-------------|
+| `--host` | `-h` | Host URL without trailing slash (e.g., `https://api.example.com`) |
+| `--output` | `-o` | Output file path (e.g., `./src/schemas/remote-commands.ts`) |
+| `--prefix` | `-p` | Optional prefix for command IDs (e.g., `cloud`) |
+
+#### Example
+
+```bash
+cmd-ipc generate-schema \
+  --host https://api.example.com \
+  --output ./src/schemas/cloud-commands.ts \
+  --prefix cloud
+```
+
+This generates a TypeScript file with Valibot schemas for all commands exposed by the remote server.
+
+## Testing Utilities
+
+### TestLogger
+
+A logger that captures output for testing.
+
+```typescript
+import { TestLogger } from '@coralstack/cmd-ipc/testing'
+
+const registry = new CommandRegistry({
+  id: 'test',
+  logger: TestLogger,
+})
+```

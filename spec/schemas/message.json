@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://coralstack.com/cmd-ipc/spec/v1/message.json",
+  "title": "CommandMessage",
+  "description": "Any message on the cmd-ipc wire. Discriminated union by 'type'.",
+  "oneOf": [
+    { "$ref": "register.command.request.json" },
+    { "$ref": "register.command.response.json" },
+    { "$ref": "list.commands.request.json" },
+    { "$ref": "list.commands.response.json" },
+    { "$ref": "execute.command.request.json" },
+    { "$ref": "execute.command.response.json" },
+    { "$ref": "event.json" }
+  ]
+}

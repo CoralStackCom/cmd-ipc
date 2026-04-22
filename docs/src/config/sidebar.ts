@@ -32,35 +32,94 @@ export const sidebar: SidebarSection[] = [
     label: 'Getting Started',
     items: [
       { label: 'Installation', slug: 'getting-started/installation' },
-      { label: 'Quick Start', slug: 'getting-started/quick-start' },
+      { label: 'Channels', slug: 'getting-started/channels' },
       {
-        label: 'Channels',
+        label: 'TypeScript',
         items: [
-          { label: 'Overview', slug: 'getting-started/channels' },
+          { label: 'Quick Start', slug: 'getting-started/typescript/quick-start' },
           {
-            label: 'MessagePortChannel',
-            slug: 'getting-started/channels/message-port-channel',
+            label: 'Defining Commands',
+            slug: 'getting-started/typescript/defining-commands',
           },
-          { label: 'HTTPChannel', slug: 'getting-started/channels/http-channel' },
-          { label: 'MCPChannel', slug: 'getting-started/channels/mcp-channel' },
+          { label: 'Type Safety', slug: 'getting-started/typescript/type-safety' },
+          {
+            label: 'Channels',
+            items: [
+              { label: 'Overview', slug: 'getting-started/typescript/channels' },
+              {
+                label: 'MessagePortChannel',
+                slug: 'getting-started/typescript/channels/message-port-channel',
+              },
+              {
+                label: 'HTTPChannel',
+                slug: 'getting-started/typescript/channels/http-channel',
+              },
+              {
+                label: 'MCPChannel',
+                slug: 'getting-started/typescript/channels/mcp-channel',
+              },
+            ],
+          },
+          { label: 'CLI', slug: 'getting-started/typescript/cli' },
         ],
       },
-      { label: 'Type Safety', slug: 'getting-started/type-safety' },
-      { label: 'CLI', slug: 'getting-started/cli' },
+      {
+        label: 'Rust',
+        items: [
+          { label: 'Quick Start', slug: 'getting-started/rust/quick-start' },
+          {
+            label: 'Defining Commands',
+            slug: 'getting-started/rust/defining-commands',
+          },
+          { label: 'Type Safety', slug: 'getting-started/rust/type-safety' },
+          {
+            label: 'Channels',
+            items: [
+              { label: 'Overview', slug: 'getting-started/rust/channels' },
+              {
+                label: 'InMemoryChannel',
+                slug: 'getting-started/rust/channels/in-memory-channel',
+              },
+              {
+                label: 'MCPChannel',
+                slug: 'getting-started/rust/channels/mcp-channel',
+              },
+            ],
+          },
+        ],
+      },
     ],
   },
   {
     label: 'Examples',
     items: [
       { label: 'Overview', slug: 'examples/overview' },
-      { label: 'Web Workers', slug: 'examples/web-workers' },
-      { label: 'Electron', slug: 'examples/electron' },
-      { label: 'Cloudflare Workers', slug: 'examples/cloudflare-workers' },
-      { label: 'AI Agent MCP', slug: 'examples/mcp-agent' },
+      {
+        label: 'TypeScript',
+        items: [
+          { label: 'Web Workers', slug: 'examples/typescript/web-workers' },
+          { label: 'Electron', slug: 'examples/typescript/electron' },
+          {
+            label: 'Cloudflare Workers',
+            slug: 'examples/typescript/cloudflare-workers',
+          },
+          { label: 'AI Agent MCP', slug: 'examples/typescript/mcp-agent' },
+        ],
+      },
+      {
+        label: 'Rust',
+        items: [
+          { label: 'Multi-Service CLI', slug: 'examples/rust/multi-service' },
+          { label: 'Dynamic Plugin', slug: 'examples/rust/dynamic-plugin' },
+        ],
+      },
     ],
   },
   {
     label: 'Reference',
-    autogenerate: { directory: 'api' },
+    items: [
+      { label: 'TypeScript API', slug: 'api/typescript' },
+      { label: 'Rust API', slug: 'api/rust' },
+    ],
   },
 ]

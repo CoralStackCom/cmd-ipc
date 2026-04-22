@@ -1,0 +1,133 @@
+---
+title: Multi-Service
+description: Two registries, one process, cross-registry routing via InMemoryChannel
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+A single-process Rust example showing the `#[command_service]` macro, cross-registry routing, and event fan-out — the Rust equivalent of the TypeScript [Web Workers example](/cmd-ipc/examples/typescript/web-workers/), minus the worker boundary.
+
+Source: `rust/examples/multi-service/`.
+
+## Topology
+
+```text
+  ┌───────────┐     InMemoryChannel     ┌─────────────┐
+  │   root    │ ◄─────────────────────► │   worker    │
+  │           │                         │             │
+  │ GreetSvc  │                         │  MathSvc    │
+  └───────────┘                         └─────────────┘
+```
+
+- **root** — hosts `GreetService` (`greet.hello`, `greet.farewell`)
+- **worker** — hosts `MathService` (`math.add`, `math.sub`, `math.mul`). Configured with `router_channel = "root"`, so its commands appear on `root` as remote.
+
+The REPL runs against `root`. Calls to `greet.*` execute locally; `math.*` route across the channel to `worker`.
+
+## Run it
+
+```bash
+make rs-start-example multi-service
+# or
+cd rust && cargo run -p multi-service
+```
+
+## What the code shows
+
+<Steps>
+
+1. **Macro-based command registration** — `MathService` and `GreetService` each use `#[command_service]` on an `impl` block, with `#[command("id", description = "...")]` per method. One call to `Service.register(&registry).await?` registers everything.
+
+2. **`InMemoryChannel::pair`** — both halves of the transport created in one line, no OS sockets or worker threads.
+
+3. **Runtime-agnostic driver spawning** — `register_channel` returns a future the caller spawns on `futures::executor::ThreadPool`. Swap in tokio or async-std with no library changes.
+
+4. **Cross-registry routing** — calling `math.add` on `root` escalates via the channel to `worker`, executes, and the response travels back. Same code path the TS library uses for a `routerChannel` setup.
+
+5. **Interactive REPL** — `list` shows commands with their advertised JSON Schema; `call` walks the schema and prompts for each field; `emit` broadcasts events and shows them arriving on `worker`.
+
+</Steps>
+
+## The service struct
+
+```rust
+use coralstack_cmd_ipc::prelude::*;
+
+#[payload]
+pub struct BinaryOpReq { pub a: i64, pub b: i64 }
+
+pub struct MathService;
+
+#[command_service]
+impl MathService {
+    #[command("math.add", description = "Add two integers")]
+    async fn add(&self, req: BinaryOpReq) -> Result<i64, CommandError> {
+        Ok(req.a + req.b)
+    }
+
+    #[command("math.sub", description = "Subtract b from a")]
+    async fn sub(&self, req: BinaryOpReq) -> Result<i64, CommandError> {
+        Ok(req.a - req.b)
+    }
+
+    #[command("math.mul", description = "Multiply two integers")]
+    async fn mul(&self, req: BinaryOpReq) -> Result<i64, CommandError> {
+        Ok(req.a * req.b)
+    }
+}
+```
+
+## Wiring the two registries
+
+```rust
+let (ch_for_root, ch_for_worker) = InMemoryChannel::pair("worker", "root");
+
+let root = CommandRegistry::new(Config {
+    id: Some("root".into()),
+    ..Default::default()
+});
+let worker = CommandRegistry::new(Config {
+    id: Some("worker".into()),
+    router_channel: Some("root".into()),
+    ..Default::default()
+});
+
+let driver_root   = root.register_channel(ch_for_root).await?;
+let driver_worker = worker.register_channel(ch_for_worker).await?;
+
+pool.spawn(driver_root)?;
+pool.spawn(driver_worker)?;
+
+GreetService.register(&root).await?;
+MathService.register(&worker).await?;
+```
+
+## Sample session
+
+```text
+› list
++----------------+-----------------------+
+| ID             | Description           |
++----------------+-----------------------+
+| greet.hello    | Greet someone by name |
+| greet.farewell | Say goodbye           |
+| math.add       | Add two integers      |
+| math.sub       | Subtract b from a     |
+| math.mul       | Multiply two integers |
++----------------+-----------------------+
+
+› call
+pick (number or id): 3
+  a (integer, required): 7
+  b (integer, required): 11
+[cli] math.add -> ok (0.2ms)
+18
+
+› emit user.updated {"id":42,"name":"Ada"}
+[worker] event received: user.updated {"id":42,"name":"Ada"}
+```
+
+<Aside type="tip">
+  The JSON Schema shown by `list` is the exact blob the registry advertises on the wire — byte-compatible with what the TypeScript implementation sends in `register.command.request` / `list.commands.response`. See [Protocol](/cmd-ipc/introduction/protocol/) and `spec/schemas/command-definition.json` for the normative shape.
+</Aside>
+
