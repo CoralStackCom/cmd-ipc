@@ -1162,7 +1162,7 @@ fn command_error_to_execute(e: &CommandError, command_id: &str) -> ExecuteError 
 
 fn error_to_command_error(err: ExecuteError, command_id: &str) -> CommandError {
     match err.code {
-        ExecuteErrorCode::NotFound => CommandError::NotFound(command_id.into()),
+        ExecuteErrorCode::NotFound => CommandError::NotFound(err.message),
         ExecuteErrorCode::InvalidRequest => CommandError::InvalidRequest {
             command_id: command_id.into(),
             message: err.message,

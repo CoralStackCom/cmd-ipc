@@ -1,6 +1,6 @@
 {
   "name": "@coralstack/cmd-ipc-mcp",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "MCP (Model Context Protocol) channel implementation for @coralstack/cmd-ipc",
   "keywords": [],
   "author": {
