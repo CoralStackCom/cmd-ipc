@@ -473,9 +473,20 @@ export class CommandRegistry<
               }
             }
             // We are root and command not found
-            throw new Error(`Command "${message.commandId}" not found`)
+            throw new CommandNotFoundError(`Command "${message.commandId}" not found`)
           }
         } catch (error) {
+          // Preserve error code if it's a known registry error, otherwise
+          // default to INTERNAL_ERROR for handler / runtime failures.
+          const code =
+            error instanceof Error &&
+            'code' in error &&
+            typeof (error as { code: unknown }).code === 'string' &&
+            (Object.values(ExecuteCommandResponseErrorCode) as string[]).includes(
+              (error as { code: string }).code,
+            )
+              ? ((error as { code: string }).code as ExecuteCommandResponseErrorCode)
+              : ExecuteCommandResponseErrorCode.INTERNAL_ERROR
           channel.sendMessage({
             id: crypto.randomUUID(),
             type: MessageType.EXECUTE_COMMAND_RESPONSE,
@@ -483,7 +494,7 @@ export class CommandRegistry<
             response: {
               ok: false,
               error: {
-                code: ExecuteCommandResponseErrorCode.NOT_FOUND,
+                code,
                 message: (error as Error).message,
               },
             },

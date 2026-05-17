@@ -38,6 +38,7 @@ let registry = CommandRegistry::new(Config {
     router_channel: None,
     request_ttl: Duration::from_secs(30),
     event_ttl: Duration::from_secs(5),
+    max_in_flight_per_channel: 256,
 });
 ```
 
@@ -49,6 +50,18 @@ let registry = CommandRegistry::new(Config {
 | `router_channel` | `Option<String>` | Channel ID for escalating unknown commands |
 | `request_ttl` | `Duration` | Timeout for pending requests |
 | `event_ttl` | `Duration` | TTL for event deduplication |
+| `max_in_flight_per_channel` | `usize` | Per-channel cap on concurrently in-flight handler futures (default `256`; `0` disables) |
+
+Every field has a sensible default — call `Config::default()` or use `..Default::default()` in a struct literal and you can omit anything you don't care about:
+
+```rust
+let registry = CommandRegistry::new(Config {
+    id: Some("main".into()),
+    ..Default::default()  // fills in router_channel, request_ttl, event_ttl, max_in_flight_per_channel
+});
+```
+
+The fields are only *syntactically* required when you list them out one by one (Rust struct literals must name every field). Functionally none of them are mandatory.
 
 ### Methods
 
@@ -83,6 +96,14 @@ tokio::spawn(driver);
 ```
 
 Forgetting to spawn the driver means the registry never processes incoming messages from that channel. `dispose()` will still work (it awaits each `channel.close()`), but until then the channel is silent from the registry's point of view.
+
+### Concurrent handler dispatch
+
+Within the driver task, the pump dispatches handlers concurrently: each incoming message's handler future is pushed into a `FuturesUnordered` and cooperatively interleaved with the next `recv`. A handler that awaits external work (timer, network, forwarded call) no longer blocks subsequent messages on the same channel — fast commands, forwarded responses, and events all continue flowing.
+
+The number of simultaneously in-flight handlers on one channel is capped by `Config::max_in_flight_per_channel` (default `256`). At the cap the pump applies backpressure to the channel rather than dropping messages; set to `0` to disable the cap.
+
+This is cooperative concurrency on a single executor task, not multi-thread parallelism. For true CPU-parallel dispatch, wrap your handler body in your runtime's `spawn` (e.g. `tokio::spawn`) — the crate itself stays runtime-agnostic.
 
 ### request_ttl vs handler duration
 

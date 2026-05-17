@@ -26,7 +26,8 @@ use std::time::Duration;
 
 use futures::channel::oneshot;
 use futures::future::BoxFuture;
-use futures::FutureExt;
+use futures::stream::FuturesUnordered;
+use futures::{FutureExt, StreamExt};
 use parking_lot::Mutex;
 use serde::Serialize;
 use serde_json::Value;
@@ -55,6 +56,20 @@ pub struct Config {
     pub request_ttl: Duration,
     /// How long a seen event id is remembered for dedup purposes.
     pub event_ttl: Duration,
+    /// Maximum number of handler futures that may be in flight
+    /// concurrently on a single channel's pump. Once this cap is
+    /// reached, the pump stops pulling new messages off the channel
+    /// (applying upstream backpressure) until an in-flight handler
+    /// finishes. `0` disables the cap.
+    ///
+    /// **Optional in practice** — `Config::default()` sets this to
+    /// `256`, so callers using `..Default::default()` never need to
+    /// supply it. It is only *syntactically* required when you build
+    /// `Config { … }` field-by-field (Rust struct literals must list
+    /// every field). The cap exists so a misbehaving peer can't cause
+    /// unbounded handler-future buildup; the default is fine for
+    /// almost every workload.
+    pub max_in_flight_per_channel: usize,
 }
 
 impl Default for Config {
@@ -64,6 +79,7 @@ impl Default for Config {
             router_channel: None,
             request_ttl: Duration::from_secs(30),
             event_ttl: Duration::from_secs(5),
+            max_in_flight_per_channel: 256,
         }
     }
 }
@@ -125,6 +141,8 @@ struct Inner {
     event_listeners: Mutex<HashMap<String, BTreeMap<u64, EventListener>>>,
     /// Monotonically-increasing token used to key event listeners.
     next_listener_token: AtomicU64,
+    /// Per-channel in-flight cap, copied from [`Config`].
+    max_in_flight_per_channel: usize,
 }
 
 /// The main entry point of the crate.
@@ -171,6 +189,7 @@ impl CommandRegistry {
             seen_events: TtlMap::new(cfg.event_ttl),
             event_listeners: Mutex::new(HashMap::new()),
             next_listener_token: AtomicU64::new(0),
+            max_in_flight_per_channel: cfg.max_in_flight_per_channel,
         });
         Self { inner }
     }
@@ -340,6 +359,18 @@ impl CommandRegistry {
     /// `futures::executor::block_on`, …) for the registry to exchange
     /// messages with the peer. The future completes when the channel
     /// closes.
+    ///
+    /// Handler dispatch is **concurrent within the driver task**: the
+    /// pump pushes each incoming message's handler future into a
+    /// [`FuturesUnordered`] and cooperatively interleaves them with
+    /// the next `recv`, so a slow handler that awaits external work
+    /// no longer blocks subsequent messages on the same channel. The
+    /// number of simultaneously in-flight handlers is capped by
+    /// [`Config::max_in_flight_per_channel`] (default 256); at the
+    /// cap the pump applies backpressure to the channel rather than
+    /// dropping messages. For true multi-thread parallelism, wrap
+    /// the handler body in your runtime's `spawn` (e.g.
+    /// `tokio::spawn`) — the crate itself stays runtime-agnostic.
     pub async fn register_channel(
         &self,
         channel: Arc<dyn CommandChannel>,
@@ -369,7 +400,31 @@ impl CommandRegistry {
         let inner = self.inner.clone();
         let ch = channel;
         Ok(async move {
-            while let Some(msg) = ch.recv().await {
+            // In-flight handler futures cooperatively interleaved with
+            // message recv. This is what makes the pump non-blocking:
+            // when one handler awaits (sleep / network / forwarded
+            // call), the executor polls other handlers and the recv
+            // future on the same task, so a slow handler can no
+            // longer wedge every subsequent message behind it.
+            //
+            // Stays runtime-agnostic (no `tokio::spawn`); the user's
+            // executor still owns the single task driving this pump.
+            // True multi-thread parallelism is possible if the user
+            // wraps their handler body in `tokio::spawn` themselves.
+            let mut in_flight: FuturesUnordered<BoxFuture<'static, ()>> = FuturesUnordered::new();
+            let cap = inner.max_in_flight_per_channel;
+
+            loop {
+                // Backpressure: while at capacity, drain in-flight
+                // handlers instead of accepting new messages. Ordering
+                // of message *reception* is preserved — only dispatch
+                // fans out. Messages are never dropped.
+                while cap > 0 && in_flight.len() >= cap {
+                    if in_flight.next().await.is_none() {
+                        break;
+                    }
+                }
+
                 // Opportunistic TTL sweep: any registry activity
                 // triggers a pass over the pending-reply / route maps
                 // so timed-out entries fire their on_expire callbacks
@@ -378,8 +433,34 @@ impl CommandRegistry {
                 inner.execute_replies.sweep_expired();
                 inner.register_replies.sweep_expired();
                 inner.routes.sweep_expired();
-                Inner::handle_message(inner.clone(), ch.clone(), msg).await;
+
+                // Wait for either the next message OR for an in-flight
+                // handler to make progress. When `in_flight` is empty
+                // we'd otherwise busy-loop on its `.next()` returning
+                // `None`, so park on `pending()` in that case.
+                let next_msg = if in_flight.is_empty() {
+                    ch.recv().await
+                } else {
+                    futures::select_biased! {
+                        // Drain finished handlers so the in_flight set
+                        // shrinks promptly. `select_next_some` skips
+                        // the empty case, but we've already guarded
+                        // against that above.
+                        _ = in_flight.select_next_some() => continue,
+                        msg = ch.recv().fuse() => msg,
+                    }
+                };
+
+                let Some(msg) = next_msg else { break };
+                in_flight.push(Inner::handle_message(inner.clone(), ch.clone(), msg).boxed());
             }
+
+            // Channel closed — drain any in-flight handlers so their
+            // outgoing responses are sent before we tear the channel
+            // state down. Handlers that try to `send` on the now-closed
+            // channel will get `Err(Closed)` from the transport, which
+            // is the existing semantics.
+            while in_flight.next().await.is_some() {}
             Inner::handle_channel_close(&inner, ch.id());
         })
     }
@@ -1162,7 +1243,7 @@ fn command_error_to_execute(e: &CommandError, command_id: &str) -> ExecuteError 
 
 fn error_to_command_error(err: ExecuteError, command_id: &str) -> CommandError {
     match err.code {
-        ExecuteErrorCode::NotFound => CommandError::NotFound(command_id.into()),
+        ExecuteErrorCode::NotFound => CommandError::NotFound(err.message),
         ExecuteErrorCode::InvalidRequest => CommandError::InvalidRequest {
             command_id: command_id.into(),
             message: err.message,

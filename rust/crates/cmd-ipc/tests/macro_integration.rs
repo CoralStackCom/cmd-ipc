@@ -65,6 +65,7 @@ fn config(id: &str, router: Option<&str>) -> Config {
         router_channel: router.map(String::from),
         request_ttl: Duration::from_secs(5),
         event_ttl: Duration::from_secs(5),
+        max_in_flight_per_channel: 256,
     }
 }
 

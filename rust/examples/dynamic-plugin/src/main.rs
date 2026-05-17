@@ -344,6 +344,7 @@ fn main() {
         router_channel: None,
         request_ttl: Duration::from_secs(5),
         event_ttl: Duration::from_secs(5),
+        max_in_flight_per_channel: 256,
     });
 
     // Create the plugin channel and wire it into the registry. The

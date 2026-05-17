@@ -41,12 +41,14 @@ fn setup() -> (CommandRegistry, CommandRegistry, ThreadPool) {
         router_channel: None,
         request_ttl: Duration::from_secs(30),
         event_ttl: Duration::from_secs(5),
+        max_in_flight_per_channel: 256,
     };
     let worker_cfg = Config {
         id: Some("worker".into()),
         router_channel: Some("root".into()),
         request_ttl: Duration::from_secs(30),
         event_ttl: Duration::from_secs(5),
+        max_in_flight_per_channel: 256,
     };
 
     let (ch_for_root, ch_for_worker) = InMemoryChannel::pair("worker", "root");
